@@ -55,8 +55,15 @@ function ChatWindow({ messages, onSendMessage, isLoading }) {
         )}
         {isLoading && (
           <div className="flex justify-start">
-            <div className="bg-[#282828] text-white rounded-lg px-4 py-2">
-              <p className="text-sm">AI is thinking...</p>
+            <div className="bg-[#282828] text-white rounded-lg px-4 py-3">
+              <div className="flex items-center gap-2">
+                <div className="flex gap-1.5">
+                  <span className="w-2 h-2 bg-[#1DB954] rounded-full animate-thinking" style={{ animationDelay: '0ms' }}></span>
+                  <span className="w-2 h-2 bg-[#1DB954] rounded-full animate-thinking" style={{ animationDelay: '200ms' }}></span>
+                  <span className="w-2 h-2 bg-[#1DB954] rounded-full animate-thinking" style={{ animationDelay: '400ms' }}></span>
+                </div>
+                <span className="text-xs text-[#b3b3b3]">AI is thinking...</span>
+              </div>
             </div>
           </div>
         )}

@@ -13,6 +13,13 @@ function App() {
   const [showPlaylistNameModal, setShowPlaylistNameModal] = useState(false)
   const [selectedModel, setSelectedModel] = useState('gpt-5-mini')
   const [responseId, setResponseId] = useState(null) // Store response_id for stateful conversations
+  const [lastRequestStats, setLastRequestStats] = useState(null) // Token usage and cost for last request
+  const [cumulativeStats, setCumulativeStats] = useState({ // Cumulative stats since reset
+    total_prompt_tokens: 0,
+    total_completion_tokens: 0,
+    total_tokens: 0,
+    total_cost_usd: 0
+  })
 
   const handleOAuthCallback = useCallback(async (code) => {
     try {
@@ -107,6 +114,11 @@ function App() {
     }
   }, [responseId])
 
+  // Save cumulative stats to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem('cumulativeStats', JSON.stringify(cumulativeStats))
+  }, [cumulativeStats])
+
   // Check for OAuth callback on mount
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search)
@@ -173,9 +185,17 @@ function App() {
     setMessages([])
     setCurrentPlaylist(null)
     setResponseId(null) // Clear response_id to start fresh conversation
+    setLastRequestStats(null) // Clear last request stats
+    setCumulativeStats({ // Reset cumulative stats
+      total_prompt_tokens: 0,
+      total_completion_tokens: 0,
+      total_tokens: 0,
+      total_cost_usd: 0
+    })
     localStorage.removeItem('chatMessages')
     localStorage.removeItem('currentPlaylist')
     localStorage.removeItem('openaiResponseId')
+    localStorage.removeItem('cumulativeStats')
   }
 
   const handleSendMessage = async (message) => {
@@ -217,6 +237,23 @@ function App() {
       // Store response_id for next request (stateful conversations)
       if (data.response_id) {
         setResponseId(data.response_id)
+      }
+
+      // Update token usage and cost stats
+      if (data.usage) {
+        // Set last request stats
+        setLastRequestStats({
+          ...data.usage,
+          model: data.model
+        })
+
+        // Update cumulative stats
+        setCumulativeStats(prev => ({
+          total_prompt_tokens: prev.total_prompt_tokens + (data.usage.prompt_tokens || 0),
+          total_completion_tokens: prev.total_completion_tokens + (data.usage.completion_tokens || 0),
+          total_tokens: prev.total_tokens + (data.usage.total_tokens || 0),
+          total_cost_usd: prev.total_cost_usd + (data.usage.cost_usd || 0)
+        }))
       }
 
       // Create playlist if songs are provided
@@ -460,6 +497,36 @@ function App() {
                 onUpload={handleUpload}
                 disabled={!currentPlaylist}
               />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Dev Info Panel */}
+      <div className="container mx-auto px-4 py-2 max-w-6xl mt-4">
+        <div className="bg-[#181818] rounded-lg shadow-lg p-3 border border-[#282828]">
+          <div className="flex items-center justify-between text-xs text-[#b3b3b3]">
+            <div className="flex items-center gap-6">
+              <div>
+                <span className="text-[#727272]">Last Request: </span>
+                {lastRequestStats ? (
+                  <span className="text-white">
+                    {lastRequestStats.total_tokens.toLocaleString()} tokens 
+                    ({lastRequestStats.prompt_tokens.toLocaleString()} + {lastRequestStats.completion_tokens.toLocaleString()}) 
+                    • ${lastRequestStats.cost_usd.toFixed(6)} • {lastRequestStats.model}
+                  </span>
+                ) : (
+                  <span className="text-[#404040]">No requests yet</span>
+                )}
+              </div>
+              <div>
+                <span className="text-[#727272]">Total: </span>
+                <span className="text-white">
+                  {cumulativeStats.total_tokens.toLocaleString()} tokens 
+                  ({cumulativeStats.total_prompt_tokens.toLocaleString()} + {cumulativeStats.total_completion_tokens.toLocaleString()}) 
+                  • ${cumulativeStats.total_cost_usd.toFixed(6)}
+                </span>
+              </div>
             </div>
           </div>
         </div>

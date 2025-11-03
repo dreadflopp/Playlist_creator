@@ -161,7 +161,10 @@ router.post('/chat', async (req, res) => {
     console.log('\n[OpenAI Debug] === Responses API Response ===');
     console.log(`Response ID: ${completion.id}`);
     console.log(`Model used: ${completion.model}`);
+    console.log(`Full usage object:`, JSON.stringify(completion.usage || {}, null, 2));
+    console.log(`Usage keys:`, Object.keys(completion.usage || {}));
     console.log(`Usage - Prompt tokens: ${completion.usage?.prompt_tokens || 'N/A'}, Completion tokens: ${completion.usage?.completion_tokens || 'N/A'}, Total: ${completion.usage?.total_tokens || 'N/A'}`);
+    console.log(`Usage - Input tokens: ${completion.usage?.input_tokens || 'N/A'}, Output tokens: ${completion.usage?.output_tokens || 'N/A'}`);
 
     // Responses API structure: output_text contains the response
     // According to the API, responses are returned in completion.output_text
@@ -211,10 +214,67 @@ router.post('/chat', async (req, res) => {
       console.log(`[OpenAI Debug] Stored response_id ${completion.id} for session ${sessionId}`);
     }
 
+    // Calculate cost based on model pricing
+    // Prices from OpenAI pricing page: https://openai.com/api/pricing/
+    // GPT-5 (per 1M tokens): Input: $1.25, Cached: $0.125, Output: $10.00
+    // GPT-5-mini (per 1M tokens): Input: $0.25, Cached: $0.025, Output: $2.00
+    const pricing = {
+      'gpt-5': {
+        input: 1.25 / 1000000,
+        cached: 0.125 / 1000000,
+        output: 10.00 / 1000000
+      },
+      'gpt-5-mini': {
+        input: 0.25 / 1000000,
+        cached: 0.025 / 1000000,
+        output: 2.00 / 1000000
+      }
+    };
+
+    // Responses API uses: input_tokens, output_tokens (not prompt_tokens/completion_tokens)
+    // Structure: usage.input_tokens, usage.output_tokens, usage.total_tokens
+    // Details: usage.input_tokens_details.cached_tokens, usage.output_tokens_details.reasoning_tokens
+    const usage = completion.usage || {};
+
+    // Extract token counts (Responses API structure)
+    const inputTokens = usage.input_tokens || 0;
+    const outputTokens = usage.output_tokens || 0;
+    const totalTokens = usage.total_tokens || 0;
+
+    // Extract detailed token counts
+    const cachedTokens = usage.input_tokens_details?.cached_tokens || 0;
+    const reasoningTokens = usage.output_tokens_details?.reasoning_tokens || 0;
+
+    // Calculate uncached input tokens (input - cached)
+    const uncachedInputTokens = inputTokens - cachedTokens;
+
+    // Debug: Log extracted values
+    console.log(`[OpenAI Debug] Extracted usage - Input: ${inputTokens} (cached: ${cachedTokens}, uncached: ${uncachedInputTokens}), Output: ${outputTokens} (reasoning: ${reasoningTokens}), Total: ${totalTokens}`);
+
+    const modelPricing = pricing[modelToUse] || pricing['gpt-5-mini'];
+
+    // Calculate cost: uncached input + cached input + output
+    // Reasoning tokens are part of output_tokens and billed at output rate
+    const cost = (uncachedInputTokens * modelPricing.input) +
+      (cachedTokens * modelPricing.cached) +
+      (outputTokens * modelPricing.output);
+
+    // For display purposes, map to prompt/completion terminology
+    // Input tokens = prompt tokens, Output tokens = completion tokens
+    const finalPromptTokens = inputTokens;
+    const finalCompletionTokens = outputTokens;
+
     return res.json({
       reply: parsedResponse.reply,
       songs: songs,
-      response_id: completion.id // Return response_id for frontend to use in next request
+      response_id: completion.id, // Return response_id for frontend to use in next request
+      usage: {
+        prompt_tokens: finalPromptTokens,
+        completion_tokens: finalCompletionTokens,
+        total_tokens: totalTokens,
+        cost_usd: cost
+      },
+      model: modelToUse
     });
   } catch (error) {
     console.error('OpenAI Responses API Error:', error);
