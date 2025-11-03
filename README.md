@@ -4,7 +4,7 @@ A full-stack web application that allows users to chat with an AI to create and 
 
 ## Features
 
-- **Chat Interface**: Interactive chat with AI assistant powered by OpenAI (GPT-4o, GPT-4o-mini, GPT-5, or GPT-5-mini)
+- **Chat Interface**: Interactive chat with AI assistant powered by OpenAI (GPT-5 or GPT-5-mini)
 - **AI Playlist Generation**: AI suggests songs based on user input and conversation context
 - **Playlist Management**: 
   - View current playlist with album thumbnails
@@ -82,7 +82,7 @@ Sends a message to the AI and receives a response with song recommendations.
   "message": "Create a relaxing playlist",
   "chatHistory": [...],
   "currentPlaylist": {...},
-  "model": "gpt-4o-mini"
+  "model": "gpt-5-mini"
 }
 ```
 
@@ -185,7 +185,7 @@ Uploads a playlist to the authenticated user's Spotify account.
 - **Frontend**: React 18, Vite, Tailwind CSS
 - **Backend**: Express.js, Node.js
 - **APIs**: 
-  - OpenAI API (GPT-4o, GPT-4o-mini, GPT-5, GPT-5-mini) with structured outputs
+  - OpenAI Responses API (GPT-5, GPT-5-mini) with structured outputs
   - Spotify Web API (OAuth 2.0, track search, playlist creation)
 
 ## Configuration
@@ -204,8 +204,11 @@ Uploads a playlist to the authenticated user's Spotify account.
 
 ## Notes
 
-- The app uses structured outputs (JSON schema) with OpenAI for reliable song data extraction
-- GPT-5 models use different parameters (`max_completion_tokens`, `reasoning_effort`) compared to GPT-4o models
+- The app uses OpenAI's **Responses API** (beta) for stateful conversations and improved performance
+- Structured outputs (JSON schema) are used with OpenAI for reliable song data extraction
+- GPT-5 models use `reasoning_effort` and `verbosity` parameters for creativity control
+- No max token limits are set, allowing OpenAI to use default token budgets
+- The Responses API automatically manages conversation history for better context awareness
 - Playlist data and chat history are persisted in browser localStorage
 - Songs are automatically verified against Spotify when playlists are created
 - Unverified songs can be manually searched and updated via the edit button

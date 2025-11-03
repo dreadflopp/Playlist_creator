@@ -345,13 +345,35 @@ router.get('/auth/login', (req, res) => {
 
   const scopes = 'playlist-modify-public playlist-modify-private user-read-private';
   const state = Math.random().toString(36).substring(2, 15); // Simple state for CSRF protection
+  
+  // Check if user wants to force logout first (for switching accounts)
+  const forceLogout = req.query.force_logout === 'true';
 
+  if (forceLogout) {
+    // Redirect to Spotify logout first, then back to login
+    // Spotify logout will clear the session, then we redirect to authorization
+    const logoutUrl = 'https://accounts.spotify.com/logout';
+    const authUrl = `${AUTH_BASE_URL}?` +
+      `client_id=${SPOTIFY_CLIENT_ID}&` +
+      `response_type=code&` +
+      `redirect_uri=${encodeURIComponent(REDIRECT_URI)}&` +
+      `scope=${encodeURIComponent(scopes)}&` +
+      `state=${state}&` +
+      `show_dialog=true`;
+    
+    // Redirect to logout, then to auth URL
+    const finalUrl = `${logoutUrl}?continue=${encodeURIComponent(authUrl)}`;
+    return res.json({ authUrl: finalUrl, state, forceLogout: true });
+  }
+
+  // Normal login - force dialog to allow switching accounts in the dialog
   const authUrl = `${AUTH_BASE_URL}?` +
     `client_id=${SPOTIFY_CLIENT_ID}&` +
     `response_type=code&` +
     `redirect_uri=${encodeURIComponent(REDIRECT_URI)}&` +
     `scope=${encodeURIComponent(scopes)}&` +
-    `state=${state}`;
+    `state=${state}&` +
+    `show_dialog=true`; // Force authorization dialog (user can log out from Spotify in the dialog)
 
   res.json({ authUrl, state });
 });

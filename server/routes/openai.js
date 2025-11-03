@@ -11,6 +11,11 @@ if (process.env.OPENAI_API_KEY) {
   console.error('ERROR: OPENAI_API_KEY not found in environment variables');
 }
 
+// In-memory store for conversation state (response IDs)
+// In production, you might want to use Redis or a database
+// Key: sessionId or userId, Value: last response_id
+const conversationState = new Map();
+
 // JSON Schema for structured output
 const playlistResponseSchema = {
   type: "object",
@@ -46,7 +51,7 @@ const playlistResponseSchema = {
 };
 
 router.post('/chat', async (req, res) => {
-  const { message, chatHistory = [], currentPlaylist = null, model = 'gpt-4o-mini' } = req.body;
+  const { message, currentPlaylist = null, model = 'gpt-5-mini', previous_response_id = null, session_id = null } = req.body;
 
   // Validate input
   if (!message || typeof message !== 'string') {
@@ -61,6 +66,12 @@ router.post('/chat', async (req, res) => {
   }
 
   try {
+    // Get previous response ID from either the request or stored state
+    let previousResponseId = previous_response_id;
+    if (!previousResponseId && session_id) {
+      previousResponseId = conversationState.get(session_id);
+    }
+
     // Build system prompt with context
     let systemPrompt = `You are a helpful AI assistant that creates and edits music playlists. `;
 
@@ -74,121 +85,139 @@ router.post('/chat', async (req, res) => {
       systemPrompt += `- Modify the playlist based on their request\n\n`;
       systemPrompt += `When editing, return the COMPLETE updated playlist (including any songs you're keeping from the current playlist plus any new ones you're adding).`;
     } else {
-      systemPrompt += `When a user asks for a playlist, provide a friendly response and suggest songs that match their request. If the use don't specify how many songs they want, suggest 5 songs.`;
+      systemPrompt += `When a user asks for a playlist, provide a friendly response and suggest songs that match their request. If the user don't specify how many songs they want, suggest 5 songs.`;
     }
 
     systemPrompt += `\n\nReturn the response as structured JSON with a reply message and an array of songs, where each song has a "song" and "artist" property.`;
 
-    // Build messages array with chat history
-    const messages = [
-      { role: 'system', content: systemPrompt }
-    ];
+    // Responses API uses 'input' (string) instead of 'messages' (array)
+    // We combine system prompt and user message into a single input string
+    // The Responses API manages conversation history automatically via previous_response_id
+    // 
+    // NOTE: We always include the playlist context because the user can manually edit
+    // the playlist (add/remove songs), and this state is not part of the conversation
+    // history managed by the Responses API. Each request needs the current playlist state.
+    const inputText = `${systemPrompt}\n\nUser: ${message}`;
 
-    // Add chat history (excluding the current message)
-    if (Array.isArray(chatHistory) && chatHistory.length > 0) {
-      messages.push(...chatHistory);
-    }
+    // Validate model name - only GPT-5 models are supported
+    const validModels = ['gpt-5-mini', 'gpt-5'];
+    const modelToUse = validModels.includes(model) ? model : 'gpt-5-mini';
 
-    // Add current user message
-    messages.push({ role: 'user', content: message });
-
-    // Validate model name - removed GPT-4.1 models as they're optimized for reasoning/coding, not this use case
-    const validModels = ['gpt-4o-mini', 'gpt-4o', 'gpt-5-mini', 'gpt-5'];
-    const modelToUse = validModels.includes(model) ? model : 'gpt-4o-mini';
-
-    // GPT-5 models have different API requirements:
-    // - Use max_completion_tokens instead of max_tokens
+    // Responses API parameters:
+    // - Uses 'input' (string) instead of 'messages' (array)
+    // - Uses stateful conversations (automatically manages history via previous_response_id)
+    // - store: true enables stateful mode, API manages conversation history
     // - Don't support custom temperature (only default value of 1)
     // - Support reasoning_effort and verbosity parameters for creativity control
-    const isGPT5Model = modelToUse.startsWith('gpt-5');
+    // - No max_completion_tokens limit (let OpenAI use defaults)
+    // - response_format has moved to text.format in Responses API
     const requestParams = {
       model: modelToUse,
-      messages: messages,
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'playlist_response',
-          strict: true,
-          schema: playlistResponseSchema
-        }
+      input: inputText, // Responses API uses 'input' instead of 'messages'
+      store: true, // Enable stateful conversations - API manages history
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'playlist_response', // Required: name at format level
+          schema: playlistResponseSchema // Required: schema at format level
+        },
+        verbosity: 'low' // Controls response detail (low, medium, high) - 'low' is sufficient for structured outputs
+      },
+      // GPT-5 creativity parameters (Responses API structure):
+      // - reasoning.effort: controls depth of reasoning (minimal, low, medium, high)
+      //   'high' uses more reasoning tokens but ensures better accuracy and real song selection
+      //   Needed to prevent the model from making up songs that don't exist
+      reasoning: {
+        effort: 'high' // High reasoning to ensure real, accurate song suggestions
       }
     };
 
-    // Set parameters based on model version
-    if (isGPT5Model) {
-      // GPT-5 uses reasoning tokens for internal thinking, then output tokens for the response
-      // Reasoning tokens consume from max_completion_tokens budget
-      // Need higher reasoning effort to ensure the model actually thinks about real songs
-      // Higher reasoning effort uses more tokens but produces better, more accurate results
-      requestParams.max_completion_tokens = 20000; // Increased significantly to allow for high reasoning + output
-      // GPT-5 creativity parameters:
-      // - reasoning_effort: controls depth of reasoning (minimal, low, medium, high)
-      //   'high' uses more reasoning tokens but ensures better accuracy and real song selection
-      //   Needed to prevent the model from making up songs that don't exist
-      // - verbosity: controls response detail (low, medium, high)
-      //   'low' is sufficient for structured outputs
-      requestParams.reasoning_effort = 'high'; // High reasoning to ensure real, accurate song suggestions
-      requestParams.verbosity = 'low'; // Structured outputs don't need verbose responses
-    } else {
-      requestParams.max_tokens = 500;
-      requestParams.temperature = 0.7; // GPT-4o models support custom temperature
+    // If this is a continuation of a conversation, reference the previous response
+    if (previousResponseId) {
+      requestParams.previous_response_id = previousResponseId;
     }
 
     // Debug: Log request details
-    console.log('\n[OpenAI Debug] === API Request ===');
+    console.log('\n[OpenAI Debug] === Responses API Request ===');
     console.log(`Model: ${requestParams.model}`);
-    console.log(`Messages count: ${requestParams.messages.length}`);
-    console.log(`System prompt: ${requestParams.messages[0]?.content?.substring(0, 100)}...`);
+    console.log(`Input length: ${requestParams.input.length} characters`);
+    console.log(`Store (stateful): ${requestParams.store}`);
+    console.log(`Previous response ID: ${requestParams.previous_response_id || 'None (first message)'}`);
+    console.log(`Input preview: ${requestParams.input.substring(0, 200)}...`);
     console.log(`Request params:`, JSON.stringify({
       model: requestParams.model,
-      hasResponseFormat: !!requestParams.response_format,
-      maxTokens: requestParams.max_tokens || requestParams.max_completion_tokens,
-      temperature: requestParams.temperature,
-      reasoning_effort: requestParams.reasoning_effort,
-      verbosity: requestParams.verbosity
+      store: requestParams.store,
+      previous_response_id: requestParams.previous_response_id,
+      hasTextFormat: !!requestParams.text?.format,
+      hasTextVerbosity: !!requestParams.text?.verbosity,
+      reasoning_effort: requestParams.reasoning?.effort
     }, null, 2));
 
-    const completion = await openai.chat.completions.create(requestParams);
+    // Use Responses API instead of Chat Completions API
+    // Note: Responses API is available directly on the client (not under beta)
+    const completion = await openai.responses.create(requestParams);
 
     // Debug: Log response details
-    console.log('\n[OpenAI Debug] === API Response ===');
-    console.log(`Completion ID: ${completion.id}`);
+    console.log('\n[OpenAI Debug] === Responses API Response ===');
+    console.log(`Response ID: ${completion.id}`);
     console.log(`Model used: ${completion.model}`);
-    console.log(`Finish reason: ${completion.choices[0]?.finish_reason}`);
-    console.log(`Usage - Prompt tokens: ${completion.usage?.prompt_tokens}, Completion tokens: ${completion.usage?.completion_tokens}, Total: ${completion.usage?.total_tokens}`);
+    console.log(`Usage - Prompt tokens: ${completion.usage?.prompt_tokens || 'N/A'}, Completion tokens: ${completion.usage?.completion_tokens || 'N/A'}, Total: ${completion.usage?.total_tokens || 'N/A'}`);
 
-    const content = completion.choices[0]?.message?.content;
-    console.log(`Content length: ${content?.length || 0} characters`);
-    console.log(`Content preview: ${content?.substring(0, 200) || '(empty)'}...`);
+    // Responses API structure: output_text contains the response
+    // According to the API, responses are returned in completion.output_text
+    const content = completion.output_text ||
+      completion.text?.output_text ||
+      completion.choices?.[0]?.message?.content ||
+      completion.content ||
+      completion.message?.content;
+    console.log(`Content type: ${typeof content}`);
+    console.log(`Content length: ${typeof content === 'string' ? content.length : JSON.stringify(content).length} characters`);
+    console.log(`Content preview: ${typeof content === 'string' ? content.substring(0, 200) : JSON.stringify(content).substring(0, 200)}...`);
 
     // Parse the structured response (should be valid JSON from structured output)
-    if (!content || content.trim() === '') {
+    if (!content || (typeof content === 'string' && content.trim() === '')) {
       console.error('[OpenAI Debug] ERROR: Empty response content');
-      console.error('[OpenAI Debug] Full completion object:', JSON.stringify(completion, null, 2));
-      throw new Error('Empty response from OpenAI API');
+      console.error('[OpenAI Debug] Full response object:', JSON.stringify(completion, null, 2));
+      throw new Error('Empty response from OpenAI Responses API');
     }
 
     let parsedResponse;
     try {
-      parsedResponse = JSON.parse(content);
+      // Content might already be parsed if Responses API returns structured output differently
+      if (typeof content === 'string') {
+        parsedResponse = JSON.parse(content);
+      } else if (typeof content === 'object') {
+        parsedResponse = content;
+      } else {
+        throw new Error(`Unexpected content type: ${typeof content}`);
+      }
       console.log('[OpenAI Debug] ✅ JSON parsed successfully');
       console.log(`[OpenAI Debug] Parsed response keys: ${Object.keys(parsedResponse).join(', ')}`);
     } catch (parseError) {
       console.error('[OpenAI Debug] ❌ JSON Parse Error:', parseError.message);
       console.error('[OpenAI Debug] Full response content:', content);
-      console.error('[OpenAI Debug] Content length:', content.length);
-      throw new Error(`Failed to parse JSON response from model: ${parseError.message}`);
+      console.error('[OpenAI Debug] Content type:', typeof content);
+      throw new Error(`Failed to parse JSON response from Responses API: ${parseError.message}`);
     }
 
     // Convert song objects to "Song - Artist" format for compatibility
     const songs = parsedResponse.songs.map(song => `${song.song} - ${song.artist}`);
 
+    // Store the response_id for stateful conversations
+    // Use session_id if provided, otherwise use a default
+    const sessionId = session_id || 'default';
+    if (completion.id) {
+      conversationState.set(sessionId, completion.id);
+      console.log(`[OpenAI Debug] Stored response_id ${completion.id} for session ${sessionId}`);
+    }
+
     return res.json({
       reply: parsedResponse.reply,
-      songs: songs
+      songs: songs,
+      response_id: completion.id // Return response_id for frontend to use in next request
     });
   } catch (error) {
-    console.error('OpenAI API Error:', error);
+    console.error('OpenAI Responses API Error:', error);
 
     // Return appropriate error based on error type
     if (error.status === 401) {
@@ -205,7 +234,7 @@ router.post('/chat', async (req, res) => {
       });
     } else {
       return res.status(500).json({
-        error: 'Failed to process request with OpenAI API.',
+        error: 'Failed to process request with OpenAI Responses API.',
         details: error.message
       });
     }

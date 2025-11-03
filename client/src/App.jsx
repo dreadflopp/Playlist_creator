@@ -11,7 +11,8 @@ function App() {
   const [isLoading, setIsLoading] = useState(false)
   const [spotifySession, setSpotifySession] = useState(null)
   const [showPlaylistNameModal, setShowPlaylistNameModal] = useState(false)
-  const [selectedModel, setSelectedModel] = useState('gpt-4o-mini')
+  const [selectedModel, setSelectedModel] = useState('gpt-5-mini')
+  const [responseId, setResponseId] = useState(null) // Store response_id for stateful conversations
 
   const handleOAuthCallback = useCallback(async (code) => {
     try {
@@ -28,13 +29,12 @@ function App() {
       if (data.success) {
         setSpotifySession(data)
         localStorage.setItem('spotifySession', JSON.stringify(data))
-        alert(`Successfully logged in as ${data.user.name}!`)
+        // Login successful - state updated automatically
       } else {
-        alert('Failed to authenticate with Spotify')
+        console.error('Failed to authenticate with Spotify')
       }
     } catch (error) {
       console.error('OAuth callback error:', error)
-      alert('Failed to authenticate with Spotify')
     }
   }, [])
 
@@ -71,6 +71,12 @@ function App() {
     if (savedModel) {
       setSelectedModel(savedModel)
     }
+
+    // Load response_id for stateful conversations
+    const savedResponseId = localStorage.getItem('openaiResponseId')
+    if (savedResponseId) {
+      setResponseId(savedResponseId)
+    }
   }, [])
 
   // Save messages to localStorage whenever they change
@@ -92,6 +98,15 @@ function App() {
     localStorage.setItem('selectedModel', selectedModel)
   }, [selectedModel])
 
+  // Save response_id to localStorage whenever it changes
+  useEffect(() => {
+    if (responseId) {
+      localStorage.setItem('openaiResponseId', responseId)
+    } else {
+      localStorage.removeItem('openaiResponseId')
+    }
+  }, [responseId])
+
   // Check for OAuth callback on mount
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search)
@@ -99,7 +114,7 @@ function App() {
     const error = urlParams.get('error')
 
     if (error) {
-      alert(`Spotify login failed: ${error}`)
+      console.error(`Spotify login failed: ${error}`)
       // Clean URL
       window.history.replaceState({}, document.title, window.location.pathname)
       return
@@ -123,17 +138,29 @@ function App() {
   }, [handleOAuthCallback])
 
   const handleLogin = async () => {
+    // If already logged in, force logout from Spotify first to allow switching accounts
+    const forceLogout = !!spotifySession
+    
+    // Clear local session
+    if (spotifySession) {
+      handleLogout()
+    }
+    
     try {
-      const response = await fetch('http://localhost:3000/api/auth/login')
+      // If switching accounts, force logout from Spotify first
+      const loginUrl = forceLogout 
+        ? 'http://localhost:3000/api/auth/login?force_logout=true'
+        : 'http://localhost:3000/api/auth/login'
+      
+      const response = await fetch(loginUrl)
       const data = await response.json()
 
       if (data.authUrl) {
-        // Redirect to Spotify login
+        // Redirect to Spotify login (or logout first if force_logout)
         window.location.href = data.authUrl
       }
     } catch (error) {
       console.error('Login error:', error)
-      alert('Failed to initiate Spotify login')
     }
   }
 
@@ -143,12 +170,12 @@ function App() {
   }
 
   const handleReset = () => {
-    if (confirm('Are you sure you want to reset? This will clear all chat messages and the current playlist.')) {
-      setMessages([])
-      setCurrentPlaylist(null)
-      localStorage.removeItem('chatMessages')
-      localStorage.removeItem('currentPlaylist')
-    }
+    setMessages([])
+    setCurrentPlaylist(null)
+    setResponseId(null) // Clear response_id to start fresh conversation
+    localStorage.removeItem('chatMessages')
+    localStorage.removeItem('currentPlaylist')
+    localStorage.removeItem('openaiResponseId')
   }
 
   const handleSendMessage = async (message) => {
@@ -158,13 +185,13 @@ function App() {
     setIsLoading(true)
 
     try {
-      // Prepare chat history for context (convert to OpenAI format)
-      const chatHistory = messages.map(msg => ({
-        role: msg.role === 'user' ? 'user' : 'assistant',
-        content: msg.content
-      }))
-
-      // Send message with context
+      // With Responses API stateful conversations, we only send:
+      // - The current message
+      // - previous_response_id to link to the conversation
+      // - session_id for backend state management
+      // - currentPlaylist (always sent since user can manually edit it)
+      // No need to send full chat history - API manages it automatically!
+      // BUT: Playlist state must be sent with each request since it can change independently
       const response = await fetch('http://localhost:3000/api/chat', {
         method: 'POST',
         headers: {
@@ -172,7 +199,8 @@ function App() {
         },
         body: JSON.stringify({
           message,
-          chatHistory,
+          previous_response_id: responseId, // Link to previous response for stateful conversation
+          session_id: 'user_session', // Simple session identifier (in production, use actual user ID)
           currentPlaylist: currentPlaylist ? {
             songs: currentPlaylist.songs.map(s => typeof s === 'string' ? s : s.name)
           } : null,
@@ -185,6 +213,11 @@ function App() {
       // Add AI response to chat
       const aiMessage = { role: 'ai', content: data.reply, timestamp: new Date() }
       setMessages(prev => [...prev, aiMessage])
+
+      // Store response_id for next request (stateful conversations)
+      if (data.response_id) {
+        setResponseId(data.response_id)
+      }
 
       // Create playlist if songs are provided
       if (data.songs && data.songs.length > 0) {
@@ -371,16 +404,14 @@ function App() {
               <h2 className="text-2xl font-semibold text-white">Chat</h2>
               <div className="flex items-center gap-2">
                 <label className="text-sm text-[#b3b3b3]">Model:</label>
-                <select
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  className="px-3 py-1.5 bg-[#121212] text-white border border-[#404040] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1DB954] text-sm"
-                >
-                  <option value="gpt-4o-mini">GPT-4o Mini</option>
-                  <option value="gpt-4o">GPT-4o</option>
-                  <option value="gpt-5-mini">GPT-5 Mini</option>
-                  <option value="gpt-5">GPT-5</option>
-                </select>
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    className="px-3 py-1.5 bg-[#121212] text-white border border-[#404040] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1DB954] text-sm"
+                  >
+                    <option value="gpt-5-mini">GPT-5 Mini</option>
+                    <option value="gpt-5">GPT-5</option>
+                  </select>
               </div>
             </div>
             <ChatWindow
@@ -394,7 +425,7 @@ function App() {
           <div className="bg-[#181818] rounded-lg shadow-lg p-6 border border-[#282828] flex flex-col min-h-0">
             <div className="flex items-center justify-between mb-4 flex-shrink-0">
               <h2 className="text-2xl font-semibold text-white">Playlist</h2>
-              {spotifySession && (
+              {spotifySession ? (
                 <div className="flex items-center gap-3 text-sm">
                   <div className="flex items-center gap-2">
                     <span className="text-[#b3b3b3]">Logged in as:</span>
@@ -407,6 +438,13 @@ function App() {
                     Logout
                   </button>
                 </div>
+              ) : (
+                <button
+                  onClick={handleLogin}
+                  className="px-3 py-1 bg-[#282828] text-white rounded hover:bg-[#404040] transition-colors text-xs"
+                >
+                  Log in to Spotify
+                </button>
               )}
             </div>
             <div className="flex-1 min-h-0 flex flex-col">
@@ -418,14 +456,6 @@ function App() {
               />
             </div>
             <div className="mt-4 space-y-2 flex-shrink-0">
-              {!spotifySession && (
-                <button
-                  onClick={handleLogin}
-                  className="w-full px-4 py-2 bg-[#282828] text-white rounded-lg hover:bg-[#404040] transition-colors text-sm"
-                >
-                  Log in to Spotify
-                </button>
-              )}
               <UploadButton
                 onUpload={handleUpload}
                 disabled={!currentPlaylist}
