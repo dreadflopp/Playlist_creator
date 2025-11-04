@@ -22,8 +22,8 @@ function UploadButton({ onUpload, disabled }) {
         disabled
           ? 'bg-[#404040] text-[#727272] cursor-not-allowed'
           : isUploading
-          ? 'bg-[#1DB954] text-white opacity-75'
-          : 'bg-[#1DB954] text-white hover:bg-[#1ed760] hover:scale-105 active:scale-100'
+          ? 'bg-[#1ED760] text-black opacity-75'
+          : 'bg-[#1ED760] text-black hover:bg-[#3BE477] hover:scale-105 active:scale-100'
       }`}
     >
       {isUploading ? 'Uploading...' : 'Upload Playlist to Spotify'}

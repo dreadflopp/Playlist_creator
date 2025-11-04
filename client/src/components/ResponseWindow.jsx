@@ -56,7 +56,7 @@ function ResponseWindow({ playlist, onUpdateSong, onRemoveSong, onAddSong }) {
                 </div>
                 <button
                   onClick={handleAddSongClick}
-                  className="px-3 py-1.5 bg-[#1DB954] text-white rounded-lg hover:bg-[#1ed760] transition-colors text-sm font-medium flex items-center gap-1.5"
+                  className="px-3 py-1.5 bg-[#1ED760] text-black rounded-lg hover:bg-[#3BE477] transition-colors text-sm font-medium flex items-center gap-1.5"
                   title="Add song to playlist"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -96,7 +96,7 @@ function ResponseWindow({ playlist, onUpdateSong, onRemoveSong, onAddSong }) {
                       <div className="flex items-center gap-1">
                         {isVerified ? (
                           <svg 
-                            className="w-4 h-4 text-[#1DB954] flex-shrink-0" 
+                            className="w-4 h-4 text-[#1ED760] flex-shrink-0" 
                             fill="currentColor" 
                             viewBox="0 0 20 20"
                             title="Verified on Spotify"
@@ -172,7 +172,7 @@ function ResponseWindow({ playlist, onUpdateSong, onRemoveSong, onAddSong }) {
               </p>
               <button
                 onClick={handleAddSongClick}
-                className="px-4 py-2 bg-[#1DB954] text-white rounded-lg hover:bg-[#1ed760] transition-colors text-sm font-medium flex items-center gap-2"
+                className="px-4 py-2 bg-[#1ED760] text-black rounded-lg hover:bg-[#3BE477] transition-colors text-sm font-medium flex items-center gap-2"
                 title="Add song to playlist"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

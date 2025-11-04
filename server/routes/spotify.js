@@ -553,5 +553,185 @@ router.post('/upload', async (req, res) => {
   }
 });
 
+// Get popular tracks from featured playlists
+async function getPopularTracks(limit = 50) {
+  if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
+    debugLog('⚠️  Spotify API not configured');
+    return [];
+  }
+
+  try {
+    const token = await getSpotifyAccessToken();
+    
+    const featuredResponse = await axios.get(`${SPOTIFY_API_URL}/browse/featured-playlists`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+      params: { limit: 5, country: 'US' }
+    });
+
+    const playlists = featuredResponse.data.playlists.items;
+    const allTracks = [];
+
+    for (const playlist of playlists.slice(0, 3)) {
+      try {
+        const tracksResponse = await axios.get(`${SPOTIFY_API_URL}/playlists/${playlist.id}/tracks`, {
+          headers: { 'Authorization': `Bearer ${token}` },
+          params: {
+            limit: 20,
+            fields: 'items(track(id,name,artists,album,popularity))'
+          }
+        });
+
+        const tracks = tracksResponse.data.items
+          .filter(item => item.track && item.track.id)
+          .map(item => ({
+            id: item.track.id,
+            name: item.track.name,
+            artist: item.track.artists.map(a => a.name).join(', '),
+            album: item.track.album.name,
+            popularity: item.track.popularity || 0
+          }));
+
+        allTracks.push(...tracks);
+      } catch (error) {
+        debugLog(`⚠️  Failed to get tracks from playlist ${playlist.id}`);
+      }
+    }
+
+    // Remove duplicates and sort by popularity
+    const uniqueTracks = Array.from(
+      new Map(allTracks.map(track => [track.id, track])).values()
+    );
+    uniqueTracks.sort((a, b) => b.popularity - a.popularity);
+    
+    debugLog(`📊 Fetched ${uniqueTracks.length} popular tracks`);
+    return uniqueTracks.slice(0, limit);
+  } catch (error) {
+    console.error('[Spotify Error] Failed to get popular tracks:', error.message);
+    return [];
+  }
+}
+
+// Get popular artists (from featured playlists)
+async function getPopularArtists(limit = 30) {
+  if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
+    return [];
+  }
+
+  try {
+    const token = await getSpotifyAccessToken();
+    
+    // Get popular tracks first, then extract unique artists
+    const popularTracks = await getPopularTracks(100);
+    const artistMap = new Map();
+
+    popularTracks.forEach(track => {
+      const artists = track.artist.split(', ').map(a => a.trim());
+      artists.forEach(artist => {
+        if (!artistMap.has(artist)) {
+          artistMap.set(artist, {
+            name: artist,
+            trackCount: 0,
+            avgPopularity: 0,
+            topTracks: []
+          });
+        }
+        const artistData = artistMap.get(artist);
+        artistData.trackCount++;
+        artistData.topTracks.push({
+          name: track.name,
+          popularity: track.popularity
+        });
+      });
+    });
+
+    // Sort by track count and average popularity
+    const artists = Array.from(artistMap.values())
+      .map(artist => ({
+        name: artist.name,
+        trackCount: artist.trackCount,
+        topTracks: artist.topTracks
+          .sort((a, b) => b.popularity - a.popularity)
+          .slice(0, 5)
+          .map(t => t.name)
+      }))
+      .sort((a, b) => b.trackCount - a.trackCount)
+      .slice(0, limit);
+
+    debugLog(`📊 Fetched ${artists.length} popular artists`);
+    return artists;
+  } catch (error) {
+    console.error('[Spotify Error] Failed to get popular artists:', error.message);
+    return [];
+  }
+}
+
+// Get top tracks for specific artists
+async function getTopTracksForArtists(artistNames, tracksPerArtist = 5) {
+  if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET || !artistNames || artistNames.length === 0) {
+    return [];
+  }
+
+  try {
+    const token = await getSpotifyAccessToken();
+    const allTracks = [];
+
+    for (const artistName of artistNames) {
+      try {
+        // First, search for the artist
+        const searchResponse = await axios.get(`${SPOTIFY_API_URL}/search`, {
+          headers: { 'Authorization': `Bearer ${token}` },
+          params: {
+            q: `artist:"${artistName}"`,
+            type: 'artist',
+            limit: 1
+          }
+        });
+
+        if (searchResponse.data.artists.items.length === 0) {
+          debugLog(`⚠️  Artist not found: ${artistName}`);
+          continue;
+        }
+
+        const artistId = searchResponse.data.artists.items[0].id;
+
+        // Get top tracks for this artist
+        const topTracksResponse = await axios.get(
+          `${SPOTIFY_API_URL}/artists/${artistId}/top-tracks`,
+          {
+            headers: { 'Authorization': `Bearer ${token}` },
+            params: { market: 'US' }
+          }
+        );
+
+        const tracks = topTracksResponse.data.tracks
+          .slice(0, tracksPerArtist)
+          .map(track => ({
+            id: track.id,
+            name: track.name,
+            artist: track.artists.map(a => a.name).join(', '),
+            album: track.album.name,
+            popularity: track.popularity || 0,
+            spotifyUrl: track.external_urls.spotify
+          }));
+
+        allTracks.push(...tracks);
+        debugLog(`✅ Got ${tracks.length} top tracks for ${artistName}`);
+      } catch (error) {
+        debugLog(`⚠️  Failed to get tracks for artist ${artistName}:`, error.message);
+      }
+    }
+
+    debugLog(`📊 Fetched ${allTracks.length} total tracks for ${artistNames.length} artists`);
+    return allTracks;
+  } catch (error) {
+    console.error('[Spotify Error] Failed to get top tracks for artists:', error.message);
+    return [];
+  }
+}
+
 module.exports = router;
+// Export helper functions for use in other routes
+module.exports.getPopularTracks = getPopularTracks;
+module.exports.getPopularArtists = getPopularArtists;
+module.exports.getTopTracksForArtists = getTopTracksForArtists;
 

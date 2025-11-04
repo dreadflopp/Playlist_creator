@@ -132,7 +132,7 @@ function SongSearchModal({ isOpen, onClose, currentSong, onSelect }) {
               value={songName}
               onChange={(e) => setSongName(e.target.value)}
               placeholder="Enter song name (optional)..."
-              className="w-full px-4 py-2 bg-[#121212] text-white border border-[#404040] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1DB954] placeholder-[#727272]"
+              className="w-full px-4 py-2 bg-[#121212] text-white border border-[#404040] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1ED760] placeholder-[#727272]"
               autoFocus
             />
           </div>
@@ -143,12 +143,12 @@ function SongSearchModal({ isOpen, onClose, currentSong, onSelect }) {
               value={artistName}
               onChange={(e) => setArtistName(e.target.value)}
               placeholder="Enter artist name (optional)..."
-              className="w-full px-4 py-2 bg-[#121212] text-white border border-[#404040] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1DB954] placeholder-[#727272]"
+              className="w-full px-4 py-2 bg-[#121212] text-white border border-[#404040] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1ED760] placeholder-[#727272]"
             />
           </div>
           <button
             type="submit"
-            className="w-full px-4 py-2 bg-[#1DB954] text-white rounded-lg hover:bg-[#1ed760] transition-colors font-semibold"
+            className="w-full px-4 py-2 bg-[#1ED760] text-black rounded-lg hover:bg-[#3BE477] transition-colors font-semibold"
           >
             Search
           </button>
@@ -184,7 +184,7 @@ function SongSearchModal({ isOpen, onClose, currentSong, onSelect }) {
                     )}
                   </div>
                   <svg
-                    className="w-5 h-5 text-[#1DB954] flex-shrink-0"
+                    className="w-5 h-5 text-[#1ED760] flex-shrink-0"
                     fill="currentColor"
                     viewBox="0 0 20 20"
                   >

@@ -28,7 +28,7 @@ function PlaylistNameModal({ isOpen, onClose, onConfirm, currentName }) {
             value={playlistName}
             onChange={(e) => setPlaylistName(e.target.value)}
             placeholder="Enter playlist name..."
-            className="w-full px-4 py-2 bg-[#121212] text-white border border-[#404040] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1DB954] placeholder-[#727272] mb-4"
+            className="w-full px-4 py-2 bg-[#121212] text-white border border-[#404040] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1ED760] placeholder-[#727272] mb-4"
             autoFocus
             maxLength={100}
           />
@@ -43,7 +43,7 @@ function PlaylistNameModal({ isOpen, onClose, onConfirm, currentName }) {
             <button
               type="submit"
               disabled={!playlistName.trim()}
-              className="flex-1 px-4 py-2 bg-[#1DB954] text-white rounded-lg hover:bg-[#1ed760] transition-colors font-semibold disabled:bg-[#404040] disabled:text-[#727272] disabled:cursor-not-allowed"
+              className="flex-1 px-4 py-2 bg-[#1ED760] text-black rounded-lg hover:bg-[#3BE477] transition-colors font-semibold disabled:bg-[#404040] disabled:text-[#727272] disabled:cursor-not-allowed"
             >
               Continue
             </button>
