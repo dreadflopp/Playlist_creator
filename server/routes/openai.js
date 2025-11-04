@@ -85,10 +85,11 @@ router.post('/chat', async (req, res) => {
       systemPrompt += `- Modify the playlist based on their request\n\n`;
       systemPrompt += `When editing, return the COMPLETE updated playlist (including any songs you're keeping from the current playlist plus any new ones you're adding).`;
     } else {
-      systemPrompt += `When a user asks for a playlist, provide a friendly response and suggest songs that match their request. If the user don't specify how many songs they want, suggest 5 songs.`;
+      systemPrompt += `When a user asks for a playlist, provide a friendly response and suggest songs that match their request. If the user don't specify how many songs they want, suggest 10 songs.`;
     }
 
     systemPrompt += `\n\nReturn the response as structured JSON with a reply message and an array of songs, where each song has a "song" and "artist" property.`;
+    systemPrompt += `\n\nExplain your thinking process in a friendly and engaging manner.`;
 
     // Responses API uses 'input' (string) instead of 'messages' (array)
     // We combine system prompt and user message into a single input string

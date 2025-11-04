@@ -21,6 +21,13 @@ A full-stack web application that allows users to chat with an AI to create and 
 - **State Persistence**: Chat history and playlists persist across page refreshes
 - **Spotify-themed UI**: Clean, modern dark theme inspired by Spotify's design
 
+## Prerequisites
+
+- **Node.js** (v16 or higher recommended)
+- **npm** (comes with Node.js)
+- **OpenAI API Key** - Get one from [OpenAI Platform](https://platform.openai.com/api-keys)
+- **Spotify Developer Account** - Create an app at [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
+
 ## Setup Instructions
 
 ### Backend Setup
@@ -36,9 +43,17 @@ A full-stack web application that allows users to chat with an AI to create and 
    ```
 
 3. Set up environment variables:
+   
+   **On Linux/Mac:**
    ```bash
    cp .env.example .env
    ```
+   
+   **On Windows (PowerShell):**
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+   
    Edit `.env` and add your API keys:
    - `OPENAI_API_KEY`: Your OpenAI API key (required)
    - `SPOTIFY_CLIENT_ID`: Your Spotify app Client ID (required)
@@ -70,6 +85,24 @@ A full-stack web application that allows users to chat with an AI to create and 
    ```
    
    The frontend will be available at `http://localhost:5173`
+
+## Running the Application
+
+1. **Start the backend server first** (from the `server` directory):
+   ```bash
+   npm start
+   ```
+   Server will run on `http://localhost:3000`
+
+2. **Start the frontend** (from the `client` directory, in a new terminal):
+   ```bash
+   npm run dev
+   ```
+   Frontend will run on `http://localhost:5173`
+
+3. **Open your browser** and navigate to `http://localhost:5173`
+
+**Note:** Both servers need to be running simultaneously for the application to work properly.
 
 ## API Endpoints
 

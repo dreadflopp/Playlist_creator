@@ -420,7 +420,7 @@ function App() {
       <div className="container mx-auto px-4 py-8 max-w-6xl">
         <div className="flex items-center justify-center gap-4 mb-8">
           <h1 className="text-4xl font-bold text-white">
-            AI Playlist Creator
+            AI Playlist Generator
           </h1>
           <button
             onClick={handleReset}
