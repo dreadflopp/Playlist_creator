@@ -11,7 +11,7 @@ function App() {
     const [isLoading, setIsLoading] = useState(false);
     const [spotifySession, setSpotifySession] = useState(null);
     const [showPlaylistNameModal, setShowPlaylistNameModal] = useState(false);
-    const [selectedModel, setSelectedModel] = useState("gpt-5-mini");
+    const [selectedModel, setSelectedModel] = useState("gpt-4o");
     const [responseId, setResponseId] = useState(null); // Store response_id for stateful conversations
     const [lastRequestStats, setLastRequestStats] = useState(null); // Token usage and cost for last request
     const [cumulativeStats, setCumulativeStats] = useState({
@@ -21,6 +21,8 @@ function App() {
         total_tokens: 0,
         total_cost_usd: 0,
     });
+    const [lastError, setLastError] = useState(null); // Track last error for retry functionality
+    const [lastFailedMessage, setLastFailedMessage] = useState(null); // Store last failed message for retry
 
     const handleOAuthCallback = useCallback(async (code) => {
         try {
@@ -185,6 +187,8 @@ function App() {
         setCurrentPlaylist(null);
         setResponseId(null); // Clear response_id to start fresh conversation
         setLastRequestStats(null); // Clear last request stats
+        setLastError(null); // Clear error state
+        setLastFailedMessage(null); // Clear failed message
         setCumulativeStats({
             // Reset cumulative stats
             total_prompt_tokens: 0,
@@ -198,11 +202,14 @@ function App() {
         localStorage.removeItem("cumulativeStats");
     };
 
-    const handleSendMessage = async (message) => {
-        // Add user message to chat
-        const userMessage = { role: "user", content: message, timestamp: new Date() };
-        setMessages((prev) => [...prev, userMessage]);
+    const handleSendMessage = async (message, isRetry = false) => {
+        // Add user message to chat (only if not a retry)
+        if (!isRetry) {
+            const userMessage = { role: "user", content: message, timestamp: new Date() };
+            setMessages((prev) => [...prev, userMessage]);
+        }
         setIsLoading(true);
+        setLastError(null); // Clear previous error when attempting new request
 
         try {
             // With Responses API stateful conversations, we only send:
@@ -215,7 +222,7 @@ function App() {
             // BUT: Playlist state must be sent with each request since it can change independently
 
             // Build recent messages including the current message (since state update is async)
-            const allMessages = [...messages, userMessage];
+            const allMessages = isRetry ? messages : [...messages, { role: "user", content: message, timestamp: new Date() }];
             const recentMessagesForIntent = allMessages.slice(-4).map((m) => ({
                 role: m.role === "user" ? "user" : "assistant",
                 content: m.content,
@@ -240,7 +247,28 @@ function App() {
                 }),
             });
 
+            // Check HTTP status before parsing JSON
+            if (!response.ok) {
+                let errorData;
+                try {
+                    errorData = await response.json();
+                } catch (parseError) {
+                    // If JSON parsing fails, create a generic error
+                    errorData = { error: `HTTP ${response.status}: ${response.statusText}` };
+                }
+                throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+            }
+
             const data = await response.json();
+
+            // Check for error in response body (even if HTTP status is 200)
+            if (data.error) {
+                throw new Error(data.error);
+            }
+
+            // Success - clear any previous errors
+            setLastError(null);
+            setLastFailedMessage(null);
 
             // Add AI response to chat
             const aiMessage = { role: "ai", content: data.reply, timestamp: new Date() };
@@ -279,22 +307,52 @@ function App() {
                         body: JSON.stringify({ songs: data.songs }),
                     });
 
-                    const playlistData = await playlistResponse.json();
-                    setCurrentPlaylist(playlistData);
+                    if (!playlistResponse.ok) {
+                        console.error("Error creating playlist: HTTP", playlistResponse.status);
+                    } else {
+                        const playlistData = await playlistResponse.json();
+                        setCurrentPlaylist(playlistData);
+                    }
                 } catch (error) {
                     console.error("Error creating playlist:", error);
                 }
             }
         } catch (error) {
             console.error("Error sending message:", error);
+
+            // Store error and failed message for retry functionality
+            const errorMessageText = error.message || "Sorry, there was an error processing your message.";
+            setLastError(errorMessageText);
+            setLastFailedMessage(message);
+
+            // Remove the last error message if it exists (to avoid duplicates on retry)
+            setMessages((prev) => {
+                const filtered = prev.filter((msg, idx) => {
+                    // Remove the last AI message if it's an error message
+                    if (idx === prev.length - 1 && msg.role === "ai" && msg.content.includes("error")) {
+                        return false;
+                    }
+                    return true;
+                });
+                return filtered;
+            });
+
+            // Add error message to chat
             const errorMessage = {
                 role: "ai",
-                content: "Sorry, there was an error processing your message.",
+                content: errorMessageText,
                 timestamp: new Date(),
+                isError: true, // Flag to identify error messages
             };
             setMessages((prev) => [...prev, errorMessage]);
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const handleRetry = () => {
+        if (lastFailedMessage) {
+            handleSendMessage(lastFailedMessage, true);
         }
     };
 
@@ -446,12 +504,13 @@ function App() {
                             <div className="flex items-center gap-2">
                                 <label className="text-sm text-[#b3b3b3]">Model:</label>
                                 <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="px-3 py-1.5 bg-[#121212] text-white border border-[#404040] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1ED760] text-sm">
+                                    <option value="gpt-4o">GPT-4o</option>
                                     <option value="gpt-5-mini">GPT-5 Mini</option>
                                     <option value="gpt-5">GPT-5</option>
                                 </select>
                             </div>
                         </div>
-                        <ChatWindow messages={messages} onSendMessage={handleSendMessage} isLoading={isLoading} />
+                        <ChatWindow messages={messages} onSendMessage={handleSendMessage} isLoading={isLoading} lastError={lastError} onRetry={handleRetry} />
                     </div>
 
                     {/* Playlist Window */}

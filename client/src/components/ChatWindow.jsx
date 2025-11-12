@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 
-function ChatWindow({ messages, onSendMessage, isLoading }) {
+function ChatWindow({ messages, onSendMessage, isLoading, lastError, onRetry }) {
     const [input, setInput] = useState("");
     const messagesEndRef = useRef(null);
 
@@ -29,7 +29,7 @@ function ChatWindow({ messages, onSendMessage, isLoading }) {
                 ) : (
                     messages.map((msg, idx) => (
                         <div key={idx} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                            <div className={`max-w-[80%] rounded-lg px-4 py-2 ${msg.role === "user" ? "bg-[#1ED760] text-black" : "bg-[#282828] text-white"}`}>
+                            <div className={`max-w-[80%] rounded-lg px-4 py-2 ${msg.role === "user" ? "bg-[#1ED760] text-black" : msg.isError ? "bg-[#5a1a1a] text-white border border-[#8b2a2a]" : "bg-[#282828] text-white"}`}>
                                 <p className={`text-xs font-medium mb-1 ${msg.role === "user" ? "text-black opacity-90" : "text-[#b3b3b3]"}`}>{msg.role === "user" ? "You" : "AI"}</p>
                                 <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                             </div>
@@ -51,6 +51,21 @@ function ChatWindow({ messages, onSendMessage, isLoading }) {
                 )}
                 <div ref={messagesEndRef} />
             </div>
+
+            {/* Retry Button - Only show when there's an error and not loading */}
+            {lastError && !isLoading && (
+                <div className="mb-2 flex justify-center">
+                    <button
+                        onClick={onRetry}
+                        className="px-4 py-2 bg-[#1ED760] text-black rounded-lg hover:bg-[#3BE477] transition-colors font-semibold text-sm flex items-center gap-2"
+                    >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        Retry
+                    </button>
+                </div>
+            )}
 
             {/* Input Form */}
             <form onSubmit={handleSubmit} className="flex gap-2">

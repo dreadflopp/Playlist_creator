@@ -117,7 +117,18 @@ async function detectPopularIntent(message, currentPlaylist, recentMessages = []
             messages: [
                 {
                     role: "system",
-                    content: `Analyze if the user wants: 1) general popular/trending tracks, 2) a list of popular artists, or 3) popular tracks from specific artists (in playlist or mentioned). Consider the conversation history context when determining intent. Respond with intent type and confidence.`,
+                    content: `Analyze if the user explicitly wants: 1) general popular/trending tracks (e.g., "popular songs", "trending tracks", "what's hot"), 2) a list of popular artists (e.g., "popular artists", "top artists"), or 3) popular tracks from specific artists (e.g., "popular songs by X", "hit tracks from X", "top songs by X", "most popular tracks from X").
+
+IMPORTANT: Only detect intent if the user EXPLICITLY mentions wanting "popular", "trending", "hit", "top", "best", "most popular", or similar terms. Simply mentioning an artist name or asking for a playlist does NOT mean they want popular tracks. 
+
+Examples:
+- "create a metallica playlist" → intentType: "none" (no mention of popular/trending)
+- "popular metallica songs" → intentType: "popular_tracks_from_artists" (explicitly mentions "popular")
+- "metallica hits" → intentType: "popular_tracks_from_artists" (explicitly mentions "hits")
+- "top songs by metallica" → intentType: "popular_tracks_from_artists" (explicitly mentions "top")
+- "metallica playlist with master of puppets" → intentType: "none" (no mention of popular/trending)
+
+Consider the conversation history context when determining intent. Respond with intent type and confidence.`,
                 },
                 {
                     role: "user",
@@ -172,6 +183,7 @@ async function generateInitialPlaylist(message, currentPlaylist, model, previous
         systemPrompt += `- Remove specific songs from the playlist\n`;
         systemPrompt += `- Replace the entire playlist with new songs\n`;
         systemPrompt += `- Modify the playlist based on their request\n\n`;
+        systemPrompt += `If the user asks you to modify the playlist, the probably wants to remove existing songs and add new ones, unless they state that songs should be added or similar.`;
         systemPrompt += `When editing, return the COMPLETE updated playlist (including any songs you're keeping from the current playlist plus any new ones you're adding).`;
     } else {
         systemPrompt += `When a user asks for a playlist, provide a friendly response and suggest songs that match their request. If the user don't specify how many songs they want, suggest 10 songs.`;
@@ -182,8 +194,8 @@ async function generateInitialPlaylist(message, currentPlaylist, model, previous
 
     const inputText = `${systemPrompt}\n\nUser: ${message}`;
 
-    const validModels = ["gpt-5-mini", "gpt-5"];
-    const modelToUse = validModels.includes(model) ? model : "gpt-5-mini";
+    const validModels = ["gpt-4o", "gpt-5-mini", "gpt-5"];
+    const modelToUse = validModels.includes(model) ? model : "gpt-4o";
 
     const requestParams = {
         model: modelToUse,
@@ -195,12 +207,17 @@ async function generateInitialPlaylist(message, currentPlaylist, model, previous
                 name: "playlist_response",
                 schema: playlistResponseSchema,
             },
-            verbosity: "low",
-        },
-        reasoning: {
-            effort: "high",
+            // GPT-4o only supports "medium", GPT-5 models support "low"
+            verbosity: modelToUse === "gpt-4o" ? "medium" : "low",
         },
     };
+
+    // Only add reasoning.effort for GPT-5 models (not supported by GPT-4o)
+    if (modelToUse === "gpt-5" || modelToUse === "gpt-5-mini") {
+        requestParams.reasoning = {
+            effort: "high",
+        };
+    }
 
     if (previousResponseId) {
         requestParams.previous_response_id = previousResponseId;
@@ -302,8 +319,8 @@ async function refinePlaylistWithPopularTracks(initialPlaylist, popularTracks, m
 
     const inputText = `${systemPrompt}\n\nUser: ${message}`;
 
-    const validModels = ["gpt-5-mini", "gpt-5"];
-    const modelToUse = validModels.includes(model) ? model : "gpt-5-mini";
+    const validModels = ["gpt-4o", "gpt-5-mini", "gpt-5"];
+    const modelToUse = validModels.includes(model) ? model : "gpt-4o";
 
     const requestParams = {
         model: modelToUse,
@@ -315,12 +332,17 @@ async function refinePlaylistWithPopularTracks(initialPlaylist, popularTracks, m
                 name: "playlist_response",
                 schema: playlistResponseSchema,
             },
-            verbosity: "low",
-        },
-        reasoning: {
-            effort: "high",
+            // GPT-4o only supports "medium", GPT-5 models support "low"
+            verbosity: modelToUse === "gpt-4o" ? "medium" : "low",
         },
     };
+
+    // Only add reasoning.effort for GPT-5 models (not supported by GPT-4o)
+    if (modelToUse === "gpt-5" || modelToUse === "gpt-5-mini") {
+        requestParams.reasoning = {
+            effort: "high",
+        };
+    }
 
     // Use the previous response ID from Phase 1 for continuity
     if (previousResponseId) {
@@ -446,7 +468,7 @@ async function extractArtistsForPopularTracks(message, currentPlaylist) {
 }
 
 router.post("/chat", async (req, res) => {
-    const { message, currentPlaylist = null, model = "gpt-5-mini", previous_response_id = null, session_id = null, recentMessages = [] } = req.body;
+    const { message, currentPlaylist = null, model = "gpt-4o", previous_response_id = null, session_id = null, recentMessages = [] } = req.body;
 
     // Validate input
     if (!message || typeof message !== "string") {
@@ -572,6 +594,11 @@ router.post("/chat", async (req, res) => {
 
                         // Calculate cost (Phase 1 + Phase 2, or just Phase 2 if we used existing playlist)
                         const pricing = {
+                            "gpt-4o": {
+                                input: 2.5 / 1000000,
+                                cached: 0.25 / 1000000,
+                                output: 10.0 / 1000000,
+                            },
                             "gpt-5": {
                                 input: 1.25 / 1000000,
                                 cached: 0.125 / 1000000,
@@ -584,7 +611,7 @@ router.post("/chat", async (req, res) => {
                             },
                         };
 
-                        const modelPricing = pricing[model] || pricing["gpt-5-mini"];
+                        const modelPricing = pricing[model] || pricing["gpt-4o"];
 
                         // Check if we skipped Phase 1 (used existing playlist)
                         const skippedPhase1 = currentPlaylist && currentPlaylist.songs && currentPlaylist.songs.length > 0;
@@ -638,6 +665,11 @@ router.post("/chat", async (req, res) => {
 
                             // Calculate cost for Phase 1 only
                             const pricing = {
+                                "gpt-4o": {
+                                    input: 2.5 / 1000000,
+                                    cached: 0.25 / 1000000,
+                                    output: 10.0 / 1000000,
+                                },
                                 "gpt-5": {
                                     input: 1.25 / 1000000,
                                     cached: 0.125 / 1000000,
@@ -650,7 +682,7 @@ router.post("/chat", async (req, res) => {
                                 },
                             };
 
-                            const modelPricing = pricing[model] || pricing["gpt-5-mini"];
+                            const modelPricing = pricing[model] || pricing["gpt-4o"];
                             const phase1Usage = initialPlaylist.usage || {};
 
                             const promptTokens = phase1Usage.prompt_tokens || 0;
@@ -716,9 +748,9 @@ router.post("/chat", async (req, res) => {
         // history managed by the Responses API. Each request needs the current playlist state.
         const inputText = `${systemPrompt}\n\nUser: ${message}`;
 
-        // Validate model name - only GPT-5 models are supported
-        const validModels = ["gpt-5-mini", "gpt-5"];
-        const modelToUse = validModels.includes(model) ? model : "gpt-5-mini";
+        // Validate model name - supports GPT-4o and GPT-5 models
+        const validModels = ["gpt-4o", "gpt-5-mini", "gpt-5"];
+        const modelToUse = validModels.includes(model) ? model : "gpt-4o";
 
         // Responses API parameters:
         // - Uses 'input' (string) instead of 'messages' (array)
@@ -738,16 +770,21 @@ router.post("/chat", async (req, res) => {
                     name: "playlist_response", // Required: name at format level
                     schema: playlistResponseSchema, // Required: schema at format level
                 },
-                verbosity: "low", // Controls response detail (low, medium, high) - 'low' is sufficient for structured outputs
-            },
-            // GPT-5 creativity parameters (Responses API structure):
-            // - reasoning.effort: controls depth of reasoning (minimal, low, medium, high)
-            //   'high' uses more reasoning tokens but ensures better accuracy and real song selection
-            //   Needed to prevent the model from making up songs that don't exist
-            reasoning: {
-                effort: "high", // High reasoning to ensure real, accurate song suggestions
+                // GPT-4o only supports "medium", GPT-5 models support "low"
+                verbosity: modelToUse === "gpt-4o" ? "medium" : "low",
             },
         };
+
+        // Only add reasoning.effort for GPT-5 models (not supported by GPT-4o)
+        // GPT-5 creativity parameters (Responses API structure):
+        // - reasoning.effort: controls depth of reasoning (minimal, low, medium, high)
+        //   'high' uses more reasoning tokens but ensures better accuracy and real song selection
+        //   Needed to prevent the model from making up songs that don't exist
+        if (modelToUse === "gpt-5" || modelToUse === "gpt-5-mini") {
+            requestParams.reasoning = {
+                effort: "high", // High reasoning to ensure real, accurate song suggestions
+            };
+        }
 
         // If this is a continuation of a conversation, reference the previous response
         if (previousResponseId) {
@@ -836,9 +873,15 @@ router.post("/chat", async (req, res) => {
 
         // Calculate cost based on model pricing
         // Prices from OpenAI pricing page: https://openai.com/api/pricing/
+        // GPT-4o (per 1M tokens): Input: $2.50, Cached: $0.25, Output: $10.00
         // GPT-5 (per 1M tokens): Input: $1.25, Cached: $0.125, Output: $10.00
         // GPT-5-mini (per 1M tokens): Input: $0.25, Cached: $0.025, Output: $2.00
         const pricing = {
+            "gpt-4o": {
+                input: 2.5 / 1000000,
+                cached: 0.25 / 1000000,
+                output: 10.0 / 1000000,
+            },
             "gpt-5": {
                 input: 1.25 / 1000000,
                 cached: 0.125 / 1000000,
@@ -871,7 +914,7 @@ router.post("/chat", async (req, res) => {
         // Debug: Log extracted values
         console.log(`[OpenAI Debug] Extracted usage - Input: ${inputTokens} (cached: ${cachedTokens}, uncached: ${uncachedInputTokens}), Output: ${outputTokens} (reasoning: ${reasoningTokens}), Total: ${totalTokens}`);
 
-        const modelPricing = pricing[modelToUse] || pricing["gpt-5-mini"];
+        const modelPricing = pricing[modelToUse] || pricing["gpt-4o"];
 
         // Calculate cost: uncached input + cached input + output
         // Reasoning tokens are part of output_tokens and billed at output rate
