@@ -316,6 +316,23 @@ function App() {
                 } catch (error) {
                     console.error("Error creating playlist:", error);
                 }
+            } else {
+                // No songs generated - add a note to the AI message
+                const updatedMessage = {
+                    role: "ai",
+                    content: data.reply + "\n\nNote: No songs were generated. This might happen if the requested artist doesn't exist or if no matching songs were found. Please try again with a different request.",
+                    timestamp: new Date(),
+                };
+                // Replace the last AI message with the updated one
+                setMessages((prev) => {
+                    const newMessages = [...prev];
+                    if (newMessages.length > 0 && newMessages[newMessages.length - 1].role === "ai") {
+                        newMessages[newMessages.length - 1] = updatedMessage;
+                    } else {
+                        newMessages.push(updatedMessage);
+                    }
+                    return newMessages;
+                });
             }
         } catch (error) {
             console.error("Error sending message:", error);

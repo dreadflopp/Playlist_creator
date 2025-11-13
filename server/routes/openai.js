@@ -42,7 +42,7 @@ const playlistResponseSchema = {
                 required: ["song", "artist"],
                 additionalProperties: false,
             },
-            minItems: 1,
+            minItems: 0, // Allow 0 to prevent hallucinations when artist/songs don't exist
             maxItems: 20, // Allow more songs for editing scenarios
         },
     },
@@ -241,10 +241,18 @@ async function generateInitialPlaylist(message, currentPlaylist, model, previous
         throw new Error(`Unexpected content type: ${typeof content}`);
     }
 
-    // Convert song objects to "Song - Artist" format
-    const songs = parsedResponse.songs.map((song) => `${song.song} - ${song.artist}`);
+    // Validate response structure
+    if (!parsedResponse.songs || !Array.isArray(parsedResponse.songs)) {
+        throw new Error("Invalid response: songs must be an array");
+    }
 
-    console.log(`[Phase 1] Generated initial playlist with ${songs.length} songs`);
+    // Validate and filter songs before mapping
+    const songs = parsedResponse.songs
+        .filter((song) => song && song.song && song.artist && typeof song.song === "string" && typeof song.artist === "string")
+        .map((song) => `${song.song.trim()} - ${song.artist.trim()}`)
+        .filter((songStr) => songStr !== " - " && songStr.length > 3); // Remove empty or too short strings
+
+    console.log(`[Phase 1] Generated initial playlist with ${songs.length} songs (${parsedResponse.songs.length} total, ${parsedResponse.songs.length - songs.length} filtered out)`);
 
     // Extract usage information
     const usage = completion.usage || {};
@@ -367,10 +375,18 @@ async function refinePlaylistWithPopularTracks(initialPlaylist, popularTracks, m
         throw new Error(`Unexpected content type: ${typeof content}`);
     }
 
-    // Convert song objects to "Song - Artist" format
-    const songs = parsedResponse.songs.map((song) => `${song.song} - ${song.artist}`);
+    // Validate response structure
+    if (!parsedResponse.songs || !Array.isArray(parsedResponse.songs)) {
+        throw new Error("Invalid response: songs must be an array");
+    }
 
-    console.log(`[Phase 2] Refined playlist with ${songs.length} songs`);
+    // Validate and filter songs before mapping
+    const songs = parsedResponse.songs
+        .filter((song) => song && song.song && song.artist && typeof song.song === "string" && typeof song.artist === "string")
+        .map((song) => `${song.song.trim()} - ${song.artist.trim()}`)
+        .filter((songStr) => songStr !== " - " && songStr.length > 3); // Remove empty or too short strings
+
+    console.log(`[Phase 2] Refined playlist with ${songs.length} songs (${parsedResponse.songs.length} total, ${parsedResponse.songs.length - songs.length} filtered out)`);
 
     // Extract usage information
     const usage = completion.usage || {};
@@ -860,8 +876,19 @@ router.post("/chat", async (req, res) => {
             throw new Error(`Failed to parse JSON response from Responses API: ${parseError.message}`);
         }
 
-        // Convert song objects to "Song - Artist" format for compatibility
-        const songs = parsedResponse.songs.map((song) => `${song.song} - ${song.artist}`);
+        // Validate response structure
+        if (!parsedResponse.songs || !Array.isArray(parsedResponse.songs)) {
+            console.error("[OpenAI Debug] ❌ Invalid response structure: songs is not an array");
+            throw new Error("Invalid response: songs must be an array");
+        }
+
+        // Validate and filter songs before mapping
+        const songs = parsedResponse.songs
+            .filter((song) => song && song.song && song.artist && typeof song.song === "string" && typeof song.artist === "string")
+            .map((song) => `${song.song.trim()} - ${song.artist.trim()}`)
+            .filter((songStr) => songStr !== " - " && songStr.length > 3); // Remove empty or too short strings
+
+        console.log(`[OpenAI Debug] Processed ${songs.length} valid songs (${parsedResponse.songs.length} total, ${parsedResponse.songs.length - songs.length} filtered out)`);
 
         // Store the response_id for stateful conversations
         // Use session_id if provided, otherwise use a default
