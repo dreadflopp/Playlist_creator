@@ -2,6 +2,13 @@ const express = require("express");
 const router = express.Router();
 const { OpenAI } = require("openai");
 
+// Import refactored modules
+const intentHandlers = require("./intentHandlers");
+const dataSources = require("./dataSources");
+const contextBuilders = require("./contextBuilders");
+const { calculateCost, calculateTotalCost, getPricing } = require("./utils/pricing");
+const { validateAndFilterSongs } = require("./utils/responseValidator");
+
 // Initialize OpenAI client - API key is required
 let openai = null;
 if (process.env.OPENAI_API_KEY) {
@@ -70,25 +77,6 @@ const intentDetectionSchema = {
     additionalProperties: false,
 };
 
-// Artist extraction schema for determining which artists to get popular tracks from
-const artistExtractionSchema = {
-    type: "object",
-    properties: {
-        artists: {
-            type: "array",
-            items: { type: "string" },
-            description: "List of artist names to get popular tracks from",
-        },
-        source: {
-            type: "string",
-            enum: ["playlist", "message", "both"],
-            description: "Where the artists were identified from",
-        },
-    },
-    required: ["artists", "source"],
-    additionalProperties: false,
-};
-
 // Function to detect if user wants popular tracks/artists
 async function detectPopularIntent(message, currentPlaylist, recentMessages = []) {
     if (!openai) return { intentType: "none", confidence: 0 };
@@ -105,8 +93,11 @@ async function detectPopularIntent(message, currentPlaylist, recentMessages = []
         if (currentPlaylist && currentPlaylist.songs && currentPlaylist.songs.length > 0) {
             const playlistInfo = currentPlaylist.songs
                 .map((s) => {
-                    if (typeof s === "string") return s;
-                    return s.name;
+                    // Only accept structured format: {song, artist}
+                    if (!s || typeof s !== "object" || !s.song || !s.artist) {
+                        throw new Error(`Invalid song format in detectPopularIntent: expected {song, artist}, got ${JSON.stringify(s)}`);
+                    }
+                    return `${s.song} - ${s.artist}`;
                 })
                 .join(", ");
             context += `\n\nCurrent playlist: ${playlistInfo}`;
@@ -158,13 +149,13 @@ Consider the conversation history context when determining intent. Respond with 
 function extractUniqueArtists(songs) {
     const artists = new Set();
     songs.forEach((song) => {
-        const songStr = typeof song === "string" ? song : song.name;
-        const parts = songStr.split(" - ");
-        if (parts.length > 1) {
-            const artist = parts.slice(1).join(" - ").trim();
-            if (artist) {
-                artists.add(artist);
-            }
+        // Only accept structured format: {song: "...", artist: "..."}
+        if (!song || typeof song !== "object" || !song.artist) {
+            throw new Error(`Invalid song format in extractUniqueArtists: expected {song, artist}, got ${JSON.stringify(song)}`);
+        }
+        const artist = song.artist.trim();
+        if (artist) {
+            artists.add(artist);
         }
     });
     return Array.from(artists);
@@ -176,7 +167,15 @@ async function generateInitialPlaylist(message, currentPlaylist, model, previous
     let systemPrompt = `You are a helpful AI assistant that creates and edits music playlists. `;
 
     if (currentPlaylist && currentPlaylist.songs && currentPlaylist.songs.length > 0) {
-        const songList = currentPlaylist.songs.map((s, i) => `${i + 1}. ${s}`).join("\n");
+        const songList = currentPlaylist.songs
+            .map((s, i) => {
+                // Only accept structured format: {song, artist}
+                if (!s || typeof s !== "object" || !s.song || !s.artist) {
+                    throw new Error(`Invalid song format in generateInitialPlaylist: expected {song, artist}, got ${JSON.stringify(s)}`);
+                }
+                return `${i + 1}. ${s.song} - ${s.artist}`;
+            })
+            .join("\n");
         systemPrompt += `\n\nCURRENT PLAYLIST:\n${songList}\n\n`;
         systemPrompt += `The user may ask you to:\n`;
         systemPrompt += `- Add new songs to the existing playlist\n`;
@@ -241,17 +240,8 @@ async function generateInitialPlaylist(message, currentPlaylist, model, previous
         throw new Error(`Unexpected content type: ${typeof content}`);
     }
 
-    // Validate response structure
-    if (!parsedResponse.songs || !Array.isArray(parsedResponse.songs)) {
-        throw new Error("Invalid response: songs must be an array");
-    }
-
-    // Validate and filter songs before mapping
-    const songs = parsedResponse.songs
-        .filter((song) => song && song.song && song.artist && typeof song.song === "string" && typeof song.artist === "string")
-        .map((song) => `${song.song.trim()} - ${song.artist.trim()}`)
-        .filter((songStr) => songStr !== " - " && songStr.length > 3); // Remove empty or too short strings
-
+    // Validate and filter songs using utility function
+    const songs = validateAndFilterSongs(parsedResponse);
     console.log(`[Phase 1] Generated initial playlist with ${songs.length} songs (${parsedResponse.songs.length} total, ${parsedResponse.songs.length - songs.length} filtered out)`);
 
     // Extract usage information
@@ -312,13 +302,29 @@ async function refinePlaylistWithPopularTracks(initialPlaylist, popularTracks, m
 
     // Add initial playlist context
     if (initialPlaylist.songs && initialPlaylist.songs.length > 0) {
-        const songList = initialPlaylist.songs.map((s, i) => `${i + 1}. ${s}`).join("\n");
+        const songList = initialPlaylist.songs
+            .map((s, i) => {
+                // Only accept structured format: {song, artist}
+                if (!s || typeof s !== "object" || !s.song || !s.artist) {
+                    throw new Error(`Invalid song format in refinePlaylistWithPopularTracks: expected {song, artist}, got ${JSON.stringify(s)}`);
+                }
+                return `${i + 1}. ${s.song} - ${s.artist}`;
+            })
+            .join("\n");
         systemPrompt += `\n\nINITIAL PLAYLIST (to refine):\n${songList}\n\n`;
     }
 
     // Add current playlist if exists (for editing scenarios)
     if (currentPlaylist && currentPlaylist.songs && currentPlaylist.songs.length > 0) {
-        const songList = currentPlaylist.songs.map((s, i) => `${i + 1}. ${s}`).join("\n");
+        const songList = currentPlaylist.songs
+            .map((s, i) => {
+                // Only accept structured format: {song, artist}
+                if (!s || typeof s !== "object" || !s.song || !s.artist) {
+                    throw new Error(`Invalid song format in refinePlaylistWithPopularTracks: expected {song, artist}, got ${JSON.stringify(s)}`);
+                }
+                return `${i + 1}. ${s.song} - ${s.artist}`;
+            })
+            .join("\n");
         systemPrompt += `\n\nCURRENT PLAYLIST:\n${songList}\n\n`;
     }
 
@@ -375,17 +381,8 @@ async function refinePlaylistWithPopularTracks(initialPlaylist, popularTracks, m
         throw new Error(`Unexpected content type: ${typeof content}`);
     }
 
-    // Validate response structure
-    if (!parsedResponse.songs || !Array.isArray(parsedResponse.songs)) {
-        throw new Error("Invalid response: songs must be an array");
-    }
-
-    // Validate and filter songs before mapping
-    const songs = parsedResponse.songs
-        .filter((song) => song && song.song && song.artist && typeof song.song === "string" && typeof song.artist === "string")
-        .map((song) => `${song.song.trim()} - ${song.artist.trim()}`)
-        .filter((songStr) => songStr !== " - " && songStr.length > 3); // Remove empty or too short strings
-
+    // Validate and filter songs using utility function
+    const songs = validateAndFilterSongs(parsedResponse);
     console.log(`[Phase 2] Refined playlist with ${songs.length} songs (${parsedResponse.songs.length} total, ${parsedResponse.songs.length - songs.length} filtered out)`);
 
     // Extract usage information
@@ -408,79 +405,6 @@ async function refinePlaylistWithPopularTracks(initialPlaylist, popularTracks, m
             reasoning_tokens: reasoningTokens,
         },
     };
-}
-
-// Function to extract artists for popular tracks (deprecated - kept for backwards compatibility)
-async function extractArtistsForPopularTracks(message, currentPlaylist) {
-    if (!openai) return { artists: [], source: "none" };
-
-    try {
-        let context = `User message: ${message}\n\n`;
-
-        // Extract artists from current playlist
-        const playlistArtists = [];
-        if (currentPlaylist && currentPlaylist.songs) {
-            currentPlaylist.songs.forEach((song) => {
-                const songStr = typeof song === "string" ? song : song.name;
-                const parts = songStr.split(" - ");
-                if (parts.length > 1) {
-                    const artist = parts.slice(1).join(" - ").trim();
-                    if (artist && !playlistArtists.includes(artist)) {
-                        playlistArtists.push(artist);
-                    }
-                }
-            });
-        }
-
-        if (playlistArtists.length > 0) {
-            context += `Artists in current playlist: ${playlistArtists.join(", ")}\n\n`;
-        }
-
-        context += `Extract which artists the user wants popular tracks from. Include artists from the playlist if relevant, or artists mentioned in the message.`;
-
-        const response = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
-            messages: [
-                {
-                    role: "system",
-                    content: "Extract artist names that the user wants popular tracks from. Return a JSON object with artist names array and source (playlist/message/both).",
-                },
-                {
-                    role: "user",
-                    content: context,
-                },
-            ],
-            response_format: {
-                type: "json_schema",
-                json_schema: {
-                    name: "artist_extraction",
-                    schema: artistExtractionSchema,
-                },
-            },
-            temperature: 0.3,
-            max_tokens: 200,
-        });
-
-        const content = response.choices[0].message.content;
-        return JSON.parse(content);
-    } catch (error) {
-        console.error("[Artist Extraction Error]", error);
-        // Fallback: extract from playlist if available
-        const playlistArtists = [];
-        if (currentPlaylist && currentPlaylist.songs) {
-            currentPlaylist.songs.forEach((song) => {
-                const songStr = typeof song === "string" ? song : song.name;
-                const parts = songStr.split(" - ");
-                if (parts.length > 1) {
-                    const artist = parts.slice(1).join(" - ").trim();
-                    if (artist && !playlistArtists.includes(artist)) {
-                        playlistArtists.push(artist);
-                    }
-                }
-            });
-        }
-        return { artists: playlistArtists, source: "playlist" };
-    }
 }
 
 router.post("/chat", async (req, res) => {
@@ -511,236 +435,113 @@ router.post("/chat", async (req, res) => {
         const intent = await detectPopularIntent(message, currentPlaylist, recentMessages);
         console.log("[Intent Detection] Result:", intent);
 
-        let spotifyContext = "";
+        let context = "";
 
-        // STEP 2: Handle different intent types and fetch Spotify data if needed
+        // STEP 2: Handle different intent types using handler pattern
         if (intent.intentType !== "none" && intent.confidence > 0.5) {
-            const { getPopularTracks, getPopularArtists, getTopTracksForArtists } = require("./spotify");
+            const handler = intentHandlers.get(intent.intentType);
 
-            if (intent.intentType === "popular_tracks") {
-                // Get general popular tracks
-                console.log("[Spotify] Fetching popular tracks...");
-                const popularTracks = await getPopularTracks(50);
-                if (popularTracks.length > 0) {
-                    const tracksList = popularTracks
-                        .slice(0, 30)
-                        .map((track, i) => `${i + 1}. ${track.name} - ${track.artist}`)
-                        .join("\n");
+            if (handler) {
+                if (handler.requiresTwoPhase()) {
+                    // Handle two-phase intents (e.g., popular_tracks_from_artists)
+                    const result = await handler.executeTwoPhase(message, currentPlaylist, model, previousResponseId, session_id, dataSources.dataSources, contextBuilders, generateInitialPlaylist, refinePlaylistWithPopularTracks, extractUniqueArtists);
 
-                    spotifyContext = `\n\nCURRENT POPULAR TRACKS ON SPOTIFY (fetched from Spotify):\n${tracksList}\n\n`;
-                    spotifyContext += `The user wants popular/trending tracks. The tracks listed above were automatically fetched from Spotify's API. `;
-                    spotifyContext += `Use this list as reference for what's currently popular on Spotify. `;
-                    spotifyContext += `Prioritize songs from this list, but you can also suggest other relevant popular songs. `;
-                    spotifyContext += `When explaining your playlist, mention that you used popular tracks from Spotify, not that the user provided them.`;
-                    console.log(`[Spotify] Added ${popularTracks.length} popular tracks to context`);
-                }
-            } else if (intent.intentType === "popular_artists") {
-                // Get popular artists list
-                console.log("[Spotify] Fetching popular artists...");
-                const popularArtists = await getPopularArtists(30);
-                if (popularArtists.length > 0) {
-                    const artistsList = popularArtists.map((artist, i) => `${i + 1}. ${artist.name}`).join("\n");
-
-                    spotifyContext = `\n\nCURRENT POPULAR ARTISTS ON SPOTIFY (fetched from Spotify):\n${artistsList}\n\n`;
-                    spotifyContext += `The user wants popular artists. The artists listed above were automatically fetched from Spotify's API. `;
-                    spotifyContext += `Use this list to create a playlist with popular artists from Spotify. `;
-                    spotifyContext += `You can suggest songs from these artists or similar popular artists. `;
-                    spotifyContext += `When explaining your playlist, mention that you used popular artists from Spotify, not that the user provided them.`;
-                    console.log(`[Spotify] Added ${popularArtists.length} popular artists to context`);
-                }
-            } else if (intent.intentType === "popular_tracks_from_artists") {
-                // TWO-PHASE APPROACH: Generate initial playlist OR use existing, then refine with popular tracks
-                console.log("[Two-Phase] Starting two-phase playlist generation...");
-
-                let initialPlaylist;
-                let artists = [];
-
-                // Check if we already have a playlist - if so, skip Phase 1
-                if (currentPlaylist && currentPlaylist.songs && currentPlaylist.songs.length > 0) {
-                    console.log("[Two-Phase] Using existing playlist, skipping Phase 1");
-
-                    // Extract unique artists from existing playlist
-                    artists = extractUniqueArtists(currentPlaylist.songs);
-                    console.log(`[Two-Phase] Extracted ${artists.length} unique artists from existing playlist:`, artists);
-
-                    // Create a mock initialPlaylist structure from current playlist
-                    initialPlaylist = {
-                        songs: currentPlaylist.songs.map((s) => {
-                            if (typeof s === "string") return s;
-                            return s.name;
-                        }),
-                        reply: "Refining existing playlist with popular tracks",
-                        response_id: previousResponseId, // Use existing response ID for continuity
-                    };
-                } else {
-                    // PHASE 1: Generate initial playlist (only if no existing playlist)
-                    console.log("[Two-Phase] No existing playlist, generating initial playlist (Phase 1)");
-                    initialPlaylist = await generateInitialPlaylist(message, currentPlaylist, model, previousResponseId, session_id);
-
-                    // Extract unique artists from initial playlist
-                    artists = extractUniqueArtists(initialPlaylist.songs);
-                    console.log(`[Two-Phase] Extracted ${artists.length} unique artists from initial playlist:`, artists);
-                }
-
-                if (artists.length > 0) {
-                    // Fetch popular tracks for those artists
-                    const { getTopTracksForArtists } = require("./spotify");
-                    console.log(`[Spotify] Fetching top tracks for ${artists.length} artists...`);
-                    const topTracks = await getTopTracksForArtists(artists, 5);
-
-                    if (topTracks.length > 0) {
-                        console.log(`[Spotify] Fetched ${topTracks.length} popular tracks for ${artists.length} artists`);
-
-                        // PHASE 2: Refine playlist with popular tracks
-                        const refinedPlaylist = await refinePlaylistWithPopularTracks(
-                            initialPlaylist,
-                            topTracks,
-                            message,
-                            currentPlaylist,
-                            model,
-                            initialPlaylist.response_id // Use Phase 1 response ID for continuity (or existing if no Phase 1)
-                        );
-
+                    if (result.success) {
                         // Store the response_id for stateful conversations
                         const sessionId = session_id || "default";
-                        if (refinedPlaylist.response_id) {
-                            conversationState.set(sessionId, refinedPlaylist.response_id);
-                            console.log(`[OpenAI Debug] Stored response_id ${refinedPlaylist.response_id} for session ${sessionId}`);
+                        if (result.playlist.response_id) {
+                            conversationState.set(sessionId, result.playlist.response_id);
+                            console.log(`[OpenAI Debug] Stored response_id ${result.playlist.response_id} for session ${sessionId}`);
                         }
 
-                        // Calculate cost (Phase 1 + Phase 2, or just Phase 2 if we used existing playlist)
-                        const pricing = {
-                            "gpt-4o": {
-                                input: 2.5 / 1000000,
-                                cached: 0.25 / 1000000,
-                                output: 10.0 / 1000000,
-                            },
-                            "gpt-5": {
-                                input: 1.25 / 1000000,
-                                cached: 0.125 / 1000000,
-                                output: 10.0 / 1000000,
-                            },
-                            "gpt-5-mini": {
-                                input: 0.25 / 1000000,
-                                cached: 0.025 / 1000000,
-                                output: 2.0 / 1000000,
-                            },
-                        };
-
-                        const modelPricing = pricing[model] || pricing["gpt-4o"];
-
-                        // Check if we skipped Phase 1 (used existing playlist)
-                        const skippedPhase1 = currentPlaylist && currentPlaylist.songs && currentPlaylist.songs.length > 0;
-                        const phase1Usage = skippedPhase1 ? {} : initialPlaylist.usage || {};
-                        const phase2Usage = refinedPlaylist.usage || {};
+                        // Calculate cost using utility function
+                        const skippedPhase1 = result.skippedPhase1;
+                        const phase1Usage = skippedPhase1 ? {} : result.phase1Usage || {};
+                        const phase2Usage = result.phase2Usage || {};
 
                         const totalPromptTokens = (phase1Usage.prompt_tokens || 0) + (phase2Usage.prompt_tokens || 0);
                         const totalCompletionTokens = (phase1Usage.completion_tokens || 0) + (phase2Usage.completion_tokens || 0);
                         const totalCachedTokens = (phase1Usage.cached_tokens || 0) + (phase2Usage.cached_tokens || 0);
-                        const totalUncachedInputTokens = totalPromptTokens - totalCachedTokens;
                         const totalTokens = (phase1Usage.total_tokens || 0) + (phase2Usage.total_tokens || 0);
 
-                        // Calculate cost: uncached input + cached input + output
-                        const cost = totalUncachedInputTokens * modelPricing.input + totalCachedTokens * modelPricing.cached + totalCompletionTokens * modelPricing.output;
+                        const cost = calculateTotalCost(
+                            [phase1Usage, phase2Usage].filter((u) => Object.keys(u).length > 0),
+                            model
+                        );
 
                         const usage = {
                             prompt_tokens: totalPromptTokens,
                             completion_tokens: totalCompletionTokens,
                             total_tokens: totalTokens,
                             cost_usd: cost,
-                            phases: skippedPhase1 ? 1 : 2, // 1 phase if we skipped Phase 1, 2 if we did both
+                            phases: skippedPhase1 ? 1 : 2,
                             phase1_tokens: phase1Usage.total_tokens || 0,
                             phase2_tokens: phase2Usage.total_tokens || 0,
-                            skipped_phase1: skippedPhase1, // Indicate if Phase 1 was skipped
+                            skipped_phase1: skippedPhase1,
                         };
 
                         return res.json({
-                            reply: refinedPlaylist.reply,
-                            songs: refinedPlaylist.songs,
-                            response_id: refinedPlaylist.response_id,
+                            reply: result.playlist.reply,
+                            songs: result.playlist.songs,
+                            response_id: result.playlist.response_id,
                             usage: usage,
                             model: model,
                         });
-                    } else {
-                        console.log("[Two-Phase] No popular tracks found");
-
-                        // Check if we skipped Phase 1 (used existing playlist)
-                        const skippedPhase1 = currentPlaylist && currentPlaylist.songs && currentPlaylist.songs.length > 0;
-
-                        if (skippedPhase1) {
-                            console.log("[Two-Phase] No popular tracks found, falling back to normal flow (no Phase 1 was done)");
-                            // Fall back to normal flow - no cost incurred since we didn't do Phase 1
-                            // Continue to normal flow below
-                        } else {
-                            console.log("[Two-Phase] No popular tracks found, returning initial playlist from Phase 1");
-                            // Return initial playlist from Phase 1
+                    } else if (result.fallbackToNormal) {
+                        // Fallback to normal flow
+                        if (!result.skippedPhase1 && result.playlist) {
+                            // Return Phase 1 result if we did Phase 1
                             const sessionId = session_id || "default";
-                            if (initialPlaylist.response_id) {
-                                conversationState.set(sessionId, initialPlaylist.response_id);
+                            if (result.playlist.response_id) {
+                                conversationState.set(sessionId, result.playlist.response_id);
                             }
 
-                            // Calculate cost for Phase 1 only
-                            const pricing = {
-                                "gpt-4o": {
-                                    input: 2.5 / 1000000,
-                                    cached: 0.25 / 1000000,
-                                    output: 10.0 / 1000000,
-                                },
-                                "gpt-5": {
-                                    input: 1.25 / 1000000,
-                                    cached: 0.125 / 1000000,
-                                    output: 10.0 / 1000000,
-                                },
-                                "gpt-5-mini": {
-                                    input: 0.25 / 1000000,
-                                    cached: 0.025 / 1000000,
-                                    output: 2.0 / 1000000,
-                                },
-                            };
-
-                            const modelPricing = pricing[model] || pricing["gpt-4o"];
-                            const phase1Usage = initialPlaylist.usage || {};
-
-                            const promptTokens = phase1Usage.prompt_tokens || 0;
-                            const completionTokens = phase1Usage.completion_tokens || 0;
-                            const cachedTokens = phase1Usage.cached_tokens || 0;
-                            const uncachedInputTokens = promptTokens - cachedTokens;
-                            const totalTokens = phase1Usage.total_tokens || 0;
-
-                            const cost = uncachedInputTokens * modelPricing.input + cachedTokens * modelPricing.cached + completionTokens * modelPricing.output;
+                            const phase1Usage = result.phase1Usage || {};
+                            const cost = calculateCost(phase1Usage, model);
 
                             return res.json({
-                                reply: initialPlaylist.reply,
-                                songs: initialPlaylist.songs,
-                                response_id: initialPlaylist.response_id,
+                                reply: result.playlist.reply,
+                                songs: result.playlist.songs,
+                                response_id: result.playlist.response_id,
                                 usage: {
-                                    prompt_tokens: promptTokens,
-                                    completion_tokens: completionTokens,
-                                    total_tokens: totalTokens,
+                                    prompt_tokens: phase1Usage.prompt_tokens || 0,
+                                    completion_tokens: phase1Usage.completion_tokens || 0,
+                                    total_tokens: phase1Usage.total_tokens || 0,
                                     cost_usd: cost,
                                     phases: 1,
                                 },
                                 model: model,
                             });
                         }
+                        // Otherwise continue to normal flow below
                     }
                 } else {
-                    console.log("[Two-Phase] No artists found, falling back to normal flow");
-                    // Fall back to normal flow if no artists found
+                    // Handle single-phase intents
+                    const result = await handler.handle(intent, message, currentPlaylist, model, previousResponseId, session_id, dataSources.dataSources, contextBuilders);
+                    context = result.context || "";
                 }
             }
         }
 
+        // STEP 3: Build system prompt with context and generate playlist
         // Build system prompt with context
         let systemPrompt = `You are a helpful AI assistant that creates and edits music playlists. `;
 
-        // Add Spotify context if available
-        if (spotifyContext) {
-            systemPrompt += spotifyContext;
+        // Add context from intent handlers if available
+        if (context) {
+            systemPrompt += context;
         }
 
         if (currentPlaylist && currentPlaylist.songs && currentPlaylist.songs.length > 0) {
-            const songList = currentPlaylist.songs.map((s, i) => `${i + 1}. ${s}`).join("\n");
+            const songList = currentPlaylist.songs
+                .map((s, i) => {
+                    // Only accept structured format: {song, artist}
+                    if (!s || typeof s !== "object" || !s.song || !s.artist) {
+                        throw new Error(`Invalid song format in main chat route: expected {song, artist}, got ${JSON.stringify(s)}`);
+                    }
+                    return `${i + 1}. ${s.song} - ${s.artist}`;
+                })
+                .join("\n");
             systemPrompt += `\n\nCURRENT PLAYLIST:\n${songList}\n\n`;
             systemPrompt += `The user may ask you to:\n`;
             systemPrompt += `- Add new songs to the existing playlist\n`;
@@ -882,12 +683,8 @@ router.post("/chat", async (req, res) => {
             throw new Error("Invalid response: songs must be an array");
         }
 
-        // Validate and filter songs before mapping
-        const songs = parsedResponse.songs
-            .filter((song) => song && song.song && song.artist && typeof song.song === "string" && typeof song.artist === "string")
-            .map((song) => `${song.song.trim()} - ${song.artist.trim()}`)
-            .filter((songStr) => songStr !== " - " && songStr.length > 3); // Remove empty or too short strings
-
+        // Validate and filter songs using utility function
+        const songs = validateAndFilterSongs(parsedResponse);
         console.log(`[OpenAI Debug] Processed ${songs.length} valid songs (${parsedResponse.songs.length} total, ${parsedResponse.songs.length - songs.length} filtered out)`);
 
         // Store the response_id for stateful conversations

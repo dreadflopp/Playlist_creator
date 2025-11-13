@@ -239,7 +239,14 @@ function App() {
                     session_id: "user_session", // Simple session identifier (in production, use actual user ID)
                     currentPlaylist: currentPlaylist
                         ? {
-                              songs: currentPlaylist.songs.map((s) => (typeof s === "string" ? s : s.name)),
+                              songs: currentPlaylist.songs.map((s) => {
+                                  // We only accept structured format: {song, artist}
+                                  if (!s || typeof s !== "object" || !s.song || !s.artist) {
+                                      console.error("Invalid song format:", s);
+                                      throw new Error(`Invalid song format: expected {song, artist}, got ${JSON.stringify(s)}`);
+                                  }
+                                  return { song: s.song, artist: s.artist };
+                              }),
                           }
                         : null,
                     recentMessages: recentMessagesForIntent, // Send last 4 messages (including current) for intent detection context
@@ -299,6 +306,7 @@ function App() {
             // Create playlist if songs are provided
             if (data.songs && data.songs.length > 0) {
                 try {
+                    // Data.songs is already in structured format {song, artist} from validateAndFilterSongs
                     const playlistResponse = await fetch("http://localhost:3000/api/playlist", {
                         method: "POST",
                         headers: {
@@ -444,7 +452,9 @@ function App() {
 
         // Update the song at the specified index
         updatedSongs[songIndex] = {
-            name: `${selectedTrack.name} - ${selectedTrack.artist}`,
+            song: selectedTrack.name,
+            artist: selectedTrack.artist,
+            name: `${selectedTrack.name} - ${selectedTrack.artist}`, // Keep for display
             verified: true,
             spotifyId: selectedTrack.id,
             spotifyUrl: selectedTrack.spotifyUrl,
@@ -476,7 +486,9 @@ function App() {
 
     const handleAddSong = async (selectedTrack) => {
         const newSong = {
-            name: `${selectedTrack.name} - ${selectedTrack.artist}`,
+            song: selectedTrack.name,
+            artist: selectedTrack.artist,
+            name: `${selectedTrack.name} - ${selectedTrack.artist}`, // Keep for display
             verified: true,
             spotifyId: selectedTrack.id,
             spotifyUrl: selectedTrack.spotifyUrl,
