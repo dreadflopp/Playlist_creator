@@ -1,6 +1,7 @@
 const PopularTracksHandler = require("./popularTracksHandler");
 const PopularArtistsHandler = require("./popularArtistsHandler");
 const PopularTracksFromArtistsHandler = require("./popularTracksFromArtistsHandler");
+const GenreMoodPlaylistsHandler = require("./genreMoodPlaylistsHandler");
 
 /**
  * Intent handler registry
@@ -10,6 +11,7 @@ const handlers = new Map([
     ["popular_tracks", new PopularTracksHandler()],
     ["popular_artists", new PopularArtistsHandler()],
     ["popular_tracks_from_artists", new PopularTracksFromArtistsHandler()],
+    ["genre_mood_playlists", new GenreMoodPlaylistsHandler()],
 ]);
 
 /**

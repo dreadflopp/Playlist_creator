@@ -10,8 +10,9 @@ const SPOTIFY_API_URL = "https://api.spotify.com/v1";
 const REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI || "http://127.0.0.1:5173/";
 const AUTH_BASE_URL = "https://accounts.spotify.com/authorize";
 
-// In-memory storage for user access tokens (in production, use sessions/Redis)
+// In-memory storage for user access tokens and profiles (in production, use sessions/Redis)
 const userTokens = new Map();
+const userProfiles = new Map(); // Store user profiles by userId
 
 // Debug logging helper
 const DEBUG = true; // Set to false to disable debug logs
@@ -125,13 +126,13 @@ function artistsMatch(requestedArtists, trackArtists) {
 }
 
 // Search for a track on Spotify using free-form search
-async function searchTrack(songName, artistName) {
+async function searchTrack(songName, artistName, market = "US") {
     if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
         debugLog("⚠️  Spotify API not configured - skipping search");
         return null; // Spotify not configured
     }
 
-    debugLog(`🔍 Searching for track: "${songName}" by "${artistName}"`);
+    debugLog(`🔍 Searching for track: "${songName}" by "${artistName}" (market: ${market})`);
 
     try {
         const token = await getSpotifyAccessToken();
@@ -148,6 +149,7 @@ async function searchTrack(songName, artistName) {
                 q: query,
                 type: "track",
                 limit: 10, // Get multiple results to find best match
+                market: market, // Use user's market to ensure track is available
             },
         });
 
@@ -186,9 +188,12 @@ async function searchTrack(songName, artistName) {
 }
 
 // Verify songs in playlist
-async function verifySongs(songs) {
+async function verifySongs(songs, sessionId = null) {
     debugLog(`\n📋 Starting verification for ${songs.length} song(s)...`);
     const startTime = Date.now();
+
+    // Get user's market if session is provided
+    const market = sessionId ? getUserCountry(sessionId) : "US";
 
     const verifiedSongs = await Promise.all(
         songs.map(async (songData, index) => {
@@ -203,7 +208,7 @@ async function verifySongs(songs) {
             const songString = `${songName} - ${artistName}`;
             debugLog(`\n[${index + 1}/${songs.length}] Verifying: ${songString}`);
 
-            const spotifyTrack = await searchTrack(songName, artistName);
+            const spotifyTrack = await searchTrack(songName, artistName, market);
 
             const result = {
                 song: songName,
@@ -236,7 +241,7 @@ async function verifySongs(songs) {
 }
 
 router.post("/playlist", async (req, res) => {
-    const { songs } = req.body;
+    const { songs, sessionId } = req.body;
 
     debugLog("\n🎵 === PLAYLIST CREATION REQUEST ===");
     debugLog(`Received ${songs?.length || 0} song(s)`);
@@ -246,9 +251,14 @@ router.post("/playlist", async (req, res) => {
         return res.status(400).json({ error: "Songs array is required" });
     }
 
+    // Require session ID for user market
+    if (!sessionId) {
+        return res.status(401).json({ error: "User must be logged in to verify songs" });
+    }
+
     try {
-        // Verify songs with Spotify API
-        const verifiedSongs = await verifySongs(songs);
+        // Verify songs with Spotify API using user's market
+        const verifiedSongs = await verifySongs(songs, sessionId);
 
         const playlist = {
             id: `playlist_${Date.now()}`,
@@ -294,23 +304,31 @@ router.post("/playlist", async (req, res) => {
 
 // Search Spotify for multiple track suggestions
 router.post("/search", async (req, res) => {
-    const { query, song, artist } = req.body;
+    const { query, song, artist, sessionId } = req.body;
 
     // Require at least a query string
     if (!query || typeof query !== "string") {
         return res.status(400).json({ error: "Search query is required" });
     }
 
+    // Require session ID for user market
+    if (!sessionId) {
+        return res.status(401).json({ error: "User must be logged in to search" });
+    }
+
     if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
         return res.status(500).json({ error: "Spotify API is not configured" });
     }
+
+    // Get user's market
+    const market = getUserCountry(sessionId);
 
     try {
         const token = await getSpotifyAccessToken();
 
         // Use free-form search - let Spotify handle relevance ranking
         // The query is already formatted as "song artist" from the frontend
-        debugLog(`🔍 User search (free-form): "${query}"`);
+        debugLog(`🔍 User search (free-form): "${query}" (market: ${market})`);
 
         const response = await axios.get(`${SPOTIFY_API_URL}/search`, {
             headers: {
@@ -320,6 +338,7 @@ router.post("/search", async (req, res) => {
                 q: query,
                 type: "track",
                 limit: 10, // Return up to 10 suggestions
+                market: market, // Use user's market
             },
         });
 
@@ -351,7 +370,7 @@ router.get("/auth/login", (req, res) => {
         return res.status(500).json({ error: "Spotify API not configured" });
     }
 
-    const scopes = "playlist-modify-public playlist-modify-private user-read-private";
+    const scopes = "playlist-modify-public playlist-modify-private user-read-private user-read-email";
     const state = Math.random().toString(36).substring(2, 15); // Simple state for CSRF protection
 
     // Check if user wants to force logout first (for switching accounts)
@@ -410,6 +429,16 @@ router.post("/auth/callback", async (req, res) => {
         const userId = userResponse.data.id;
         const sessionId = `spotify_${userId}_${Date.now()}`;
 
+        // Extract user profile data
+        const userProfile = {
+            id: userId,
+            display_name: userResponse.data.display_name || userId,
+            email: userResponse.data.email || null,
+            country: userResponse.data.country || "US", // Default to US if not available
+            images: userResponse.data.images || [],
+            product: userResponse.data.product || null,
+        };
+
         // Store tokens (in production, use proper sessions)
         userTokens.set(sessionId, {
             accessToken: access_token,
@@ -418,14 +447,19 @@ router.post("/auth/callback", async (req, res) => {
             userId: userId,
         });
 
-        debugLog(`✅ User authenticated: ${userResponse.data.display_name || userId}`);
+        // Store user profile by userId for easy lookup
+        userProfiles.set(userId, userProfile);
+
+        debugLog(`✅ User authenticated: ${userProfile.display_name} (${userProfile.country})`);
 
         res.json({
             success: true,
             sessionId: sessionId,
             user: {
                 id: userId,
-                name: userResponse.data.display_name || userResponse.data.id,
+                name: userProfile.display_name,
+                country: userProfile.country,
+                image: userProfile.images[0]?.url || null,
             },
         });
     } catch (error) {
@@ -450,6 +484,71 @@ function getUserAccessToken(sessionId) {
 
     return tokenData.accessToken;
 }
+
+// Get user profile by session ID
+function getUserProfile(sessionId) {
+    const tokenData = userTokens.get(sessionId);
+    if (!tokenData) return null;
+
+    return userProfiles.get(tokenData.userId) || null;
+}
+
+// Get user country by session ID (defaults to US if not available)
+function getUserCountry(sessionId) {
+    const profile = getUserProfile(sessionId);
+    return profile?.country || "US";
+}
+
+// Get current user profile endpoint
+router.get("/auth/profile", async (req, res) => {
+    const sessionId = req.headers["x-session-id"] || req.query.sessionId;
+
+    if (!sessionId) {
+        return res.status(401).json({ error: "Session ID required" });
+    }
+
+    const profile = getUserProfile(sessionId);
+    if (!profile) {
+        return res.status(401).json({ error: "User not authenticated" });
+    }
+
+    res.json({
+        success: true,
+        user: {
+            id: profile.id,
+            name: profile.display_name,
+            country: profile.country,
+            image: profile.images[0]?.url || null,
+        },
+    });
+});
+
+// Check if user is logged in
+router.get("/auth/status", async (req, res) => {
+    const sessionId = req.headers["x-session-id"] || req.query.sessionId;
+
+    if (!sessionId) {
+        return res.json({ loggedIn: false });
+    }
+
+    const tokenData = userTokens.get(sessionId);
+    if (!tokenData || Date.now() >= tokenData.expiresAt) {
+        return res.json({ loggedIn: false });
+    }
+
+    const profile = getUserProfile(sessionId);
+    res.json({
+        loggedIn: true,
+        user: profile
+            ? {
+                  id: profile.id,
+                  name: profile.display_name,
+                  country: profile.country,
+                  image: profile.images[0]?.url || null,
+              }
+            : null,
+    });
+});
 
 // Upload playlist to Spotify
 router.post("/upload", async (req, res) => {
@@ -547,73 +646,99 @@ router.post("/upload", async (req, res) => {
     }
 });
 
-// Get popular tracks from featured playlists
-async function getPopularTracks(limit = 50) {
+// Spotify playlist IDs for popular tracks
+const POPULAR_PLAYLISTS = {
+    popular: "37i9dQZF1DXcBWIGoYBM5M", // Today's Top Hits - for popular/trending tracks
+    new: "37i9dQZF1DWXJfnUiYjUKT", // New Music Friday - for new/hot tracks
+};
+
+// Get popular tracks from specific Spotify playlists
+// playlistType: "popular" for Today's Top Hits, "new" for New Music Friday
+async function getPopularTracks(limit = 50, playlistType = "popular", market = "US") {
     if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
         debugLog("⚠️  Spotify API not configured");
         return [];
     }
 
+    const playlistId = POPULAR_PLAYLISTS[playlistType] || POPULAR_PLAYLISTS.popular;
+    debugLog(`📀 Fetching tracks from playlist: ${playlistType} (${playlistId})`);
+
     try {
         const token = await getSpotifyAccessToken();
-
-        const featuredResponse = await axios.get(`${SPOTIFY_API_URL}/browse/featured-playlists`, {
-            headers: { Authorization: `Bearer ${token}` },
-            params: { limit: 5, country: "US" },
-        });
-
-        const playlists = featuredResponse.data.playlists.items;
         const allTracks = [];
+        let nextUrl = null;
+        let offset = 0;
+        const pageSize = 50; // Spotify API max per request
 
-        for (const playlist of playlists.slice(0, 3)) {
-            try {
-                const tracksResponse = await axios.get(`${SPOTIFY_API_URL}/playlists/${playlist.id}/tracks`, {
+        // Fetch tracks with pagination to get all tracks
+        do {
+            let tracksResponse;
+            if (nextUrl) {
+                // Use the next URL directly (it already contains all params)
+                tracksResponse = await axios.get(nextUrl, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+            } else {
+                // First request - use endpoint with params
+                tracksResponse = await axios.get(`${SPOTIFY_API_URL}/playlists/${playlistId}/tracks`, {
                     headers: { Authorization: `Bearer ${token}` },
                     params: {
-                        limit: 20,
-                        fields: "items(track(id,name,artists,album,popularity))",
+                        limit: pageSize,
+                        offset: offset,
+                        market: market,
+                        fields: "items(track(id,name,artists,album,popularity)),next,total",
                     },
                 });
-
-                const tracks = tracksResponse.data.items
-                    .filter((item) => item.track && item.track.id)
-                    .map((item) => ({
-                        id: item.track.id,
-                        name: item.track.name,
-                        artist: item.track.artists.map((a) => a.name).join(", "),
-                        album: item.track.album.name,
-                        popularity: item.track.popularity || 0,
-                    }));
-
-                allTracks.push(...tracks);
-            } catch (error) {
-                debugLog(`⚠️  Failed to get tracks from playlist ${playlist.id}`);
             }
-        }
 
-        // Remove duplicates and sort by popularity
+            const items = tracksResponse.data.items || [];
+            const tracks = items
+                .filter((item) => item.track && item.track.id)
+                .map((item) => ({
+                    id: item.track.id,
+                    name: item.track.name,
+                    artist: item.track.artists.map((a) => a.name).join(", "),
+                    album: item.track.album.name,
+                    popularity: item.track.popularity || 0,
+                }));
+
+            allTracks.push(...tracks);
+            nextUrl = tracksResponse.data.next;
+            offset += pageSize;
+
+            debugLog(`   Fetched ${tracks.length} tracks (total so far: ${allTracks.length})`);
+
+            // Stop if we have enough tracks or no more pages
+            if (allTracks.length >= limit || !nextUrl) {
+                break;
+            }
+        } while (nextUrl && allTracks.length < limit);
+
+        // Remove duplicates and sort by popularity (tracks are already in order by Spotify)
         const uniqueTracks = Array.from(new Map(allTracks.map((track) => [track.id, track])).values());
         uniqueTracks.sort((a, b) => b.popularity - a.popularity);
 
-        debugLog(`📊 Fetched ${uniqueTracks.length} popular tracks`);
-        return uniqueTracks.slice(0, limit);
+        const result = uniqueTracks.slice(0, limit);
+        debugLog(`📊 Fetched ${result.length} popular tracks from ${playlistType} playlist`);
+        return result;
     } catch (error) {
-        console.error("[Spotify Error] Failed to get popular tracks:", error.message);
+        console.error("[Spotify Error] Failed to get popular tracks:", error.response?.status || error.message);
+        if (error.response) {
+            console.error("[Spotify Error] Response data:", error.response.data);
+        }
         return [];
     }
 }
 
-// Get popular artists (from featured playlists)
-async function getPopularArtists(limit = 30) {
+// Get popular artists (from popular tracks playlists)
+async function getPopularArtists(limit = 30, market = "US") {
     if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
         return [];
     }
 
     try {
-        const token = await getSpotifyAccessToken();
-
         // Get popular tracks first, then extract unique artists
-        const popularTracks = await getPopularTracks(100);
+        const popularTracks = await getPopularTracks(100, "popular", market);
         const artistMap = new Map();
 
         popularTracks.forEach((track) => {
@@ -658,7 +783,7 @@ async function getPopularArtists(limit = 30) {
 }
 
 // Get top tracks for specific artists
-async function getTopTracksForArtists(artistNames, tracksPerArtist = 5) {
+async function getTopTracksForArtists(artistNames, tracksPerArtist = 5, market = "US") {
     if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET || !artistNames || artistNames.length === 0) {
         return [];
     }
@@ -689,7 +814,7 @@ async function getTopTracksForArtists(artistNames, tracksPerArtist = 5) {
                 // Get top tracks for this artist
                 const topTracksResponse = await axios.get(`${SPOTIFY_API_URL}/artists/${artistId}/top-tracks`, {
                     headers: { Authorization: `Bearer ${token}` },
-                    params: { market: "US" },
+                    params: { market: market }, // Use user's market
                 });
 
                 const tracks = topTracksResponse.data.tracks.slice(0, tracksPerArtist).map((track) => ({
@@ -716,8 +841,74 @@ async function getTopTracksForArtists(artistNames, tracksPerArtist = 5) {
     }
 }
 
+// Get tracks from a specific playlist
+async function getTracksFromPlaylist(playlistId, limit = 50, market = "US") {
+    if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
+        debugLog("⚠️  Spotify API not configured");
+        return [];
+    }
+
+    debugLog(`📀 Fetching tracks from playlist: ${playlistId}`);
+
+    try {
+        const token = await getSpotifyAccessToken();
+        const allTracks = [];
+        let nextUrl = null;
+        let offset = 0;
+        const pageSize = 50;
+
+        do {
+            let tracksResponse;
+            if (nextUrl) {
+                tracksResponse = await axios.get(nextUrl, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+            } else {
+                tracksResponse = await axios.get(`${SPOTIFY_API_URL}/playlists/${playlistId}/tracks`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                    params: {
+                        limit: pageSize,
+                        offset: offset,
+                        market: market,
+                        fields: "items(track(id,name,artists,album,popularity)),next,total",
+                    },
+                });
+            }
+
+            const items = tracksResponse.data.items || [];
+            const tracks = items
+                .filter((item) => item.track && item.track.id)
+                .map((item) => ({
+                    id: item.track.id,
+                    name: item.track.name,
+                    artist: item.track.artists.map((a) => a.name).join(", "),
+                    album: item.track.album.name,
+                    popularity: item.track.popularity || 0,
+                }));
+
+            allTracks.push(...tracks);
+            nextUrl = tracksResponse.data.next;
+            offset += pageSize;
+
+            if (allTracks.length >= limit || !nextUrl) {
+                break;
+            }
+        } while (nextUrl && allTracks.length < limit);
+
+        const result = allTracks.slice(0, limit);
+        debugLog(`📊 Fetched ${result.length} tracks from playlist`);
+        return result;
+    } catch (error) {
+        console.error("[Spotify Error] Failed to get tracks from playlist:", error.response?.status || error.message);
+        return [];
+    }
+}
+
 module.exports = router;
 // Export helper functions for use in other routes
+module.exports.getSpotifyAccessToken = getSpotifyAccessToken;
 module.exports.getPopularTracks = getPopularTracks;
 module.exports.getPopularArtists = getPopularArtists;
 module.exports.getTopTracksForArtists = getTopTracksForArtists;
+module.exports.getTracksFromPlaylist = getTracksFromPlaylist;
+module.exports.getUserCountry = getUserCountry;

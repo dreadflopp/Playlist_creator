@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 
-function SongSearchModal({ isOpen, onClose, currentSong, onSelect }) {
+function SongSearchModal({ isOpen, onClose, currentSong, onSelect, sessionId }) {
     const [songName, setSongName] = useState("");
     const [artistName, setArtistName] = useState("");
     const [results, setResults] = useState([]);
@@ -29,10 +29,16 @@ function SongSearchModal({ isOpen, onClose, currentSong, onSelect }) {
                 const performInitialSearch = async () => {
                     setIsSearching(true);
                     try {
+                        if (!sessionId) {
+                            alert("You must be logged in to Spotify to search for songs.");
+                            return;
+                        }
+
                         const searchData = {
                             query: song.trim() && artist.trim() ? `${song.trim()} ${artist.trim()}` : song.trim() || artist.trim(),
                             song: song.trim() || undefined,
                             artist: artist.trim() || undefined,
+                            sessionId: sessionId,
                         };
 
                         const response = await fetch("http://localhost:3000/api/search", {
@@ -43,10 +49,22 @@ function SongSearchModal({ isOpen, onClose, currentSong, onSelect }) {
                             body: JSON.stringify(searchData),
                         });
 
+                        if (!response.ok) {
+                            const errorData = await response.json();
+                            if (errorData.error && errorData.error.includes("logged in")) {
+                                alert("You must be logged in to Spotify to search for songs.");
+                            } else {
+                                alert(`Search failed: ${errorData.error || "Unknown error"}`);
+                            }
+                            setResults([]);
+                            return;
+                        }
+
                         const data = await response.json();
                         setResults(data.tracks || []);
                     } catch (error) {
                         console.error("Search error:", error);
+                        alert("Failed to search. Please try again.");
                         setResults([]);
                     } finally {
                         setIsSearching(false);
@@ -56,12 +74,17 @@ function SongSearchModal({ isOpen, onClose, currentSong, onSelect }) {
                 performInitialSearch();
             }
         }
-    }, [isOpen, currentSong]);
+    }, [isOpen, currentSong, sessionId]);
 
     const handleSearch = async (song, artist = "") => {
         // Need at least song name or artist name to search
         if (!song.trim() && !artist.trim()) {
             setResults([]);
+            return;
+        }
+
+        if (!sessionId) {
+            alert("You must be logged in to Spotify to search for songs.");
             return;
         }
 
@@ -71,6 +94,7 @@ function SongSearchModal({ isOpen, onClose, currentSong, onSelect }) {
                 query: song.trim() && artist.trim() ? `${song.trim()} ${artist.trim()}` : song.trim() || artist.trim(),
                 song: song.trim() || undefined,
                 artist: artist.trim() || undefined,
+                sessionId: sessionId,
             };
 
             const response = await fetch("http://localhost:3000/api/search", {
@@ -81,10 +105,22 @@ function SongSearchModal({ isOpen, onClose, currentSong, onSelect }) {
                 body: JSON.stringify(searchData),
             });
 
+            if (!response.ok) {
+                const errorData = await response.json();
+                if (errorData.error && errorData.error.includes("logged in")) {
+                    alert("You must be logged in to Spotify to search for songs.");
+                } else {
+                    alert(`Search failed: ${errorData.error || "Unknown error"}`);
+                }
+                setResults([]);
+                return;
+            }
+
             const data = await response.json();
             setResults(data.tracks || []);
         } catch (error) {
             console.error("Search error:", error);
+            alert("Failed to search. Please try again.");
             setResults([]);
         } finally {
             setIsSearching(false);

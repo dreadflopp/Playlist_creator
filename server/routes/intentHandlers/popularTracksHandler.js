@@ -1,43 +1,47 @@
 const BaseIntentHandler = require("./baseHandler");
 
 /**
- * Handler for popular_tracks intent
+ * Handler for popular_tracks intent (Phase 1)
  * Fetches popular tracks from available data sources
  */
 class PopularTracksHandler extends BaseIntentHandler {
-    async handle(intent, message, currentPlaylist, model, previousResponseId, session_id, dataSources, contextBuilders) {
-        console.log("[PopularTracksHandler] Handling popular tracks intent...");
+    getPhase() {
+        return 1; // Phase 1: No parameters needed
+    }
 
-        // Try to get data from available sources
-        const availableSources = Object.keys(dataSources).filter(name => dataSources[name].isAvailable());
-        
-        if (availableSources.length === 0) {
-            console.log("[PopularTracksHandler] No data sources available");
-            return { context: "", requiresTwoPhase: false };
-        }
+    async handle(intent, message, currentPlaylist, dataSources, contextBuilders, phase1Data = null, sessionId = null) {
+        console.log("[PopularTracksHandler] Handling Phase 1: Fetching popular tracks...");
 
-        // For now, use Spotify (can be extended to aggregate from multiple sources)
         const spotifySource = dataSources.spotify;
         if (!spotifySource || !spotifySource.isAvailable()) {
             console.log("[PopularTracksHandler] Spotify not available");
-            return { context: "", requiresTwoPhase: false };
+            return { context: "" };
+        }
+
+        // Get user's market if session is provided
+        let market = "US";
+        if (sessionId) {
+            const { getUserCountry } = require("../spotify");
+            market = getUserCountry(sessionId);
         }
 
         try {
-            console.log("[PopularTracksHandler] Fetching popular tracks from Spotify...");
-            const popularTracks = await spotifySource.getPopularTracks(50);
+            // Always use "popular" playlist (Today's Top Hits) for now
+            // "new" playlist will be used for a future intent
+            console.log(`[PopularTracksHandler] Fetching popular tracks from Spotify (market: ${market})...`);
+            const popularTracks = await spotifySource.getPopularTracks(50, "popular", market);
             
             if (popularTracks.length > 0) {
                 const builder = contextBuilders.get("spotify");
-                const context = builder ? builder.buildPopularTracksContext(popularTracks, 30) : "";
+                const context = builder ? builder.buildPopularTracksContext(popularTracks, 50) : ""; // Use all 50 tracks
                 console.log(`[PopularTracksHandler] Added ${popularTracks.length} popular tracks to context`);
-                return { context, requiresTwoPhase: false };
+                return { context };
             }
         } catch (error) {
             console.error("[PopularTracksHandler] Error fetching popular tracks:", error);
         }
 
-        return { context: "", requiresTwoPhase: false };
+        return { context: "" };
     }
 }
 

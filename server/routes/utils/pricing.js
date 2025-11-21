@@ -5,6 +5,11 @@ const MODEL_PRICING = {
         cached: 0.25 / 1000000,
         output: 10.0 / 1000000,
     },
+    "gpt-4o-mini": {
+        input: 0.15 / 1000000,
+        cached: 0.015 / 1000000,
+        output: 0.6 / 1000000,
+    },
     "gpt-5": {
         input: 1.25 / 1000000,
         cached: 0.125 / 1000000,

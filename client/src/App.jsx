@@ -39,12 +39,45 @@ function App() {
             if (data.success) {
                 setSpotifySession(data);
                 localStorage.setItem("spotifySession", JSON.stringify(data));
-                // Login successful - state updated automatically
+                // Login successful - return session data for re-verification
+                return data;
             } else {
                 console.error("Failed to authenticate with Spotify");
+                return null;
             }
         } catch (error) {
             console.error("OAuth callback error:", error);
+            return null;
+        }
+    }, []);
+
+    // Helper function to verify/re-verify a playlist
+    const verifyPlaylist = useCallback(async (playlist, sessionId) => {
+        if (!playlist || !playlist.songs || playlist.songs.length === 0 || !sessionId) {
+            return;
+        }
+
+        try {
+            const playlistResponse = await fetch("http://localhost:3000/api/playlist", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    songs: playlist.songs.map((s) => ({
+                        song: s.song,
+                        artist: s.artist,
+                    })),
+                    sessionId: sessionId,
+                }),
+            });
+
+            if (playlistResponse.ok) {
+                const verifiedPlaylist = await playlistResponse.json();
+                setCurrentPlaylist(verifiedPlaylist);
+            }
+        } catch (error) {
+            console.error("Error re-verifying playlist:", error);
         }
     }, []);
 
@@ -136,7 +169,24 @@ function App() {
         }
 
         if (code) {
-            handleOAuthCallback(code);
+            handleOAuthCallback(code).then((sessionData) => {
+                if (sessionData && sessionData.sessionId) {
+                    // After successful login, re-verify existing playlist if it exists
+                    // Check localStorage directly as it's more reliable than state at this point
+                    const savedPlaylist = localStorage.getItem("currentPlaylist");
+                    if (savedPlaylist) {
+                        try {
+                            const playlist = JSON.parse(savedPlaylist);
+                            if (playlist && playlist.songs && playlist.songs.length > 0) {
+                                // Always re-verify after login to ensure all songs are verified with new session
+                                verifyPlaylist(playlist, sessionData.sessionId);
+                            }
+                        } catch (e) {
+                            console.error("Error parsing playlist:", e);
+                        }
+                    }
+                }
+            });
             // Clean URL
             window.history.replaceState({}, document.title, window.location.pathname);
         } else {
@@ -150,7 +200,7 @@ function App() {
                 }
             }
         }
-    }, [handleOAuthCallback]);
+    }, [handleOAuthCallback, verifyPlaylist]);
 
     const handleLogin = async () => {
         // If already logged in, force logout from Spotify first to allow switching accounts
@@ -237,6 +287,7 @@ function App() {
                     message,
                     previous_response_id: responseId, // Link to previous response for stateful conversation
                     session_id: "user_session", // Simple session identifier (in production, use actual user ID)
+                    spotifySessionId: spotifySession?.sessionId || null, // Pass Spotify session for market-based searches
                     currentPlaylist: currentPlaylist
                         ? {
                               songs: currentPlaylist.songs.map((s) => {
@@ -307,12 +358,36 @@ function App() {
             if (data.songs && data.songs.length > 0) {
                 try {
                     // Data.songs is already in structured format {song, artist} from validateAndFilterSongs
+                    // Require login for playlist verification - auto-redirect without prompt
+                    if (!spotifySession || !spotifySession.sessionId) {
+                        // Store the unverified playlist temporarily
+                        const unverifiedPlaylist = {
+                            id: `playlist_${Date.now()}`,
+                            name: "AI Generated Playlist",
+                            songs: data.songs.map((s) => ({
+                                song: s.song,
+                                artist: s.artist,
+                                name: `${s.song} - ${s.artist}`,
+                                verified: false,
+                            })),
+                            songCount: data.songs.length,
+                            createdAt: new Date().toISOString(),
+                        };
+                        setCurrentPlaylist(unverifiedPlaylist);
+                        // Auto-redirect to login without prompt
+                        await handleLogin();
+                        return;
+                    }
+
                     const playlistResponse = await fetch("http://localhost:3000/api/playlist", {
                         method: "POST",
                         headers: {
                             "Content-Type": "application/json",
                         },
-                        body: JSON.stringify({ songs: data.songs }),
+                        body: JSON.stringify({
+                            songs: data.songs,
+                            sessionId: spotifySession.sessionId,
+                        }),
                     });
 
                     if (!playlistResponse.ok) {
@@ -399,12 +474,9 @@ function App() {
     const handlePlaylistNameConfirm = async (playlistName) => {
         setShowPlaylistNameModal(false);
 
-        // Check if user is logged in
+        // Check if user is logged in - auto-redirect without prompt
         if (!spotifySession || !spotifySession.sessionId) {
-            const login = confirm("You need to log in to Spotify first. Continue to login?");
-            if (login) {
-                await handleLogin();
-            }
+            await handleLogin();
             return;
         }
 
@@ -549,21 +621,24 @@ function App() {
                             {spotifySession ? (
                                 <div className="flex items-center gap-3 text-sm">
                                     <div className="flex items-center gap-2">
-                                        <span className="text-[#b3b3b3]">Logged in as:</span>
-                                        <span className="text-[#1ED760] font-medium">{spotifySession.user.name}</span>
+                                        {spotifySession.user?.image && <img src={spotifySession.user.image} alt={spotifySession.user.name} className="w-8 h-8 rounded-full object-cover" />}
+                                        <div className="flex flex-col">
+                                            <span className="text-[#1ED760] font-medium">{spotifySession.user.name}</span>
+                                            {spotifySession.user?.country && <span className="text-[#727272] text-xs">Market: {spotifySession.user.country}</span>}
+                                        </div>
                                     </div>
                                     <button onClick={handleLogout} className="px-3 py-1 bg-[#282828] text-white rounded hover:bg-[#404040] transition-colors text-xs">
                                         Logout
                                     </button>
                                 </div>
                             ) : (
-                                <button onClick={handleLogin} className="px-3 py-1 bg-[#282828] text-white rounded hover:bg-[#404040] transition-colors text-xs">
+                                <button onClick={handleLogin} className="px-4 py-2 bg-[#1ED760] text-black rounded-lg hover:bg-[#3BE477] transition-colors font-semibold text-sm">
                                     Log in to Spotify
                                 </button>
                             )}
                         </div>
                         <div className="flex-1 min-h-0 flex flex-col">
-                            <ResponseWindow playlist={currentPlaylist} onUpdateSong={handleUpdateSong} onRemoveSong={handleRemoveSong} onAddSong={handleAddSong} />
+                            <ResponseWindow playlist={currentPlaylist} onUpdateSong={handleUpdateSong} onRemoveSong={handleRemoveSong} onAddSong={handleAddSong} sessionId={spotifySession?.sessionId || null} />
                         </div>
                         <div className="mt-4 space-y-2 flex-shrink-0">
                             <UploadButton onUpload={handleUpload} disabled={!currentPlaylist} />

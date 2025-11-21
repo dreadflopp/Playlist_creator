@@ -1,7 +1,7 @@
 import { useState } from "react";
 import SongSearchModal from "./SongSearchModal";
 
-function ResponseWindow({ playlist, onUpdateSong, onRemoveSong, onAddSong }) {
+function ResponseWindow({ playlist, onUpdateSong, onRemoveSong, onAddSong, sessionId }) {
     const [searchModalOpen, setSearchModalOpen] = useState(false);
     const [selectedSongIndex, setSelectedSongIndex] = useState(null);
 
@@ -127,6 +127,7 @@ function ResponseWindow({ playlist, onUpdateSong, onRemoveSong, onAddSong }) {
                 }}
                 currentSong={selectedSongIndex !== null ? currentSong : null}
                 onSelect={handleSelectTrack}
+                sessionId={sessionId}
             />
         </>
     );

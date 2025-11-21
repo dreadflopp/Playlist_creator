@@ -22,19 +22,19 @@ class SpotifyDataSource extends BaseDataSource {
         return !!(process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET);
     }
 
-    async getPopularTracks(limit) {
+    async getPopularTracks(limit, playlistType = "popular", market = "US") {
         const { getPopularTracks } = this._getSpotifyModule();
-        return await getPopularTracks(limit);
+        return await getPopularTracks(limit, playlistType, market);
     }
 
-    async getPopularArtists(limit) {
+    async getPopularArtists(limit, market = "US") {
         const { getPopularArtists } = this._getSpotifyModule();
-        return await getPopularArtists(limit);
+        return await getPopularArtists(limit, market);
     }
 
-    async getTopTracksForArtists(artists, perArtist) {
+    async getTopTracksForArtists(artists, perArtist, market = "US") {
         const { getTopTracksForArtists } = this._getSpotifyModule();
-        return await getTopTracksForArtists(artists, perArtist);
+        return await getTopTracksForArtists(artists, perArtist, market);
     }
 }
 

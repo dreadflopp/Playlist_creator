@@ -57,29 +57,42 @@ const playlistResponseSchema = {
     additionalProperties: false,
 };
 
-// Intent detection schema for analyzing user prompts
+// Intent detection schema for analyzing user prompts - now returns array of intents
 const intentDetectionSchema = {
     type: "object",
     properties: {
-        intentType: {
-            type: "string",
-            enum: ["popular_tracks", "popular_artists", "popular_tracks_from_artists", "none"],
-            description: "The type of intent: general popular tracks, popular artists list, or popular tracks from specific artists",
-        },
-        confidence: {
-            type: "number",
-            minimum: 0,
-            maximum: 1,
-            description: "Confidence level in the intent detection",
+        intents: {
+            type: "array",
+            items: {
+                type: "object",
+                properties: {
+                    intentType: {
+                        type: "string",
+                        enum: ["popular_tracks", "popular_artists", "popular_genres", "popular_tracks_from_artists", "genre_mood_playlists"],
+                        description: "The type of intent detected",
+                    },
+                    confidence: {
+                        type: "number",
+                        minimum: 0,
+                        maximum: 1,
+                        description: "Confidence level for this specific intent",
+                    },
+                },
+                required: ["intentType", "confidence"],
+                additionalProperties: false,
+            },
+            minItems: 0,
+            maxItems: 5,
+            description: "Array of detected intents (can be empty or contain multiple)",
         },
     },
-    required: ["intentType", "confidence"],
+    required: ["intents"],
     additionalProperties: false,
 };
 
 // Function to detect if user wants popular tracks/artists
 async function detectPopularIntent(message, currentPlaylist, recentMessages = []) {
-    if (!openai) return { intentType: "none", confidence: 0 };
+    if (!openai) return { intents: [] };
 
     try {
         let context = message;
@@ -108,18 +121,32 @@ async function detectPopularIntent(message, currentPlaylist, recentMessages = []
             messages: [
                 {
                     role: "system",
-                    content: `Analyze if the user explicitly wants: 1) general popular/trending tracks (e.g., "popular songs", "trending tracks", "what's hot"), 2) a list of popular artists (e.g., "popular artists", "top artists"), or 3) popular tracks from specific artists (e.g., "popular songs by X", "hit tracks from X", "top songs by X", "most popular tracks from X").
+                    content: `Analyze if the user explicitly wants any combination of:
+1) general popular/trending tracks (e.g., "popular songs", "trending tracks", "what's hot")
+2) a list of popular artists (e.g., "popular artists", "top artists")
+3) popular genres (e.g., "popular genres", "trending genres")
+4) popular tracks from specific artists (e.g., "popular songs by X", "hit tracks from X", "top songs by X", "most popular tracks from X")
+5) genre/mood/activity-based playlists (e.g., "workout playlist", "chill music", "rock songs", "jazz playlist", "party music", "focus music", "sleep playlist", "80s music")
 
-IMPORTANT: Only detect intent if the user EXPLICITLY mentions wanting "popular", "trending", "hit", "top", "best", "most popular", or similar terms. Simply mentioning an artist name or asking for a playlist does NOT mean they want popular tracks. 
+IMPORTANT: 
+- Only detect intents if the user EXPLICITLY mentions wanting "popular", "trending", "hit", "top", "best", "most popular", or similar terms
+- For genre_mood_playlists: detect when user mentions genres (rock, pop, jazz, etc.), moods (chill, happy, sad, etc.), activities (workout, party, study, etc.), or decades (80s, 90s, etc.)
+- You can detect MULTIPLE intents if the user asks for both (e.g., "give me popular artists and popular tracks from them")
+- Simply mentioning an artist name or asking for a playlist does NOT mean they want popular tracks
 
 Examples:
-- "create a metallica playlist" → intentType: "none" (no mention of popular/trending)
-- "popular metallica songs" → intentType: "popular_tracks_from_artists" (explicitly mentions "popular")
-- "metallica hits" → intentType: "popular_tracks_from_artists" (explicitly mentions "hits")
-- "top songs by metallica" → intentType: "popular_tracks_from_artists" (explicitly mentions "top")
-- "metallica playlist with master of puppets" → intentType: "none" (no mention of popular/trending)
+- "create a metallica playlist" → intents: [] (no mention of popular/trending/genre)
+- "popular metallica songs" → intents: [{intentType: "popular_tracks_from_artists", confidence: 0.9}]
+- "create a workout playlist" → intents: [{intentType: "genre_mood_playlists", confidence: 0.9}]
+- "I want rock music" → intents: [{intentType: "genre_mood_playlists", confidence: 0.9}]
+- "chill jazz playlist" → intents: [{intentType: "genre_mood_playlists", confidence: 0.9}]
+- "popular artists" → intents: [{intentType: "popular_artists", confidence: 0.9}]
+- "give me some popular artists and some popular tracks from them" → intents: [
+    {intentType: "popular_artists", confidence: 0.9},
+    {intentType: "popular_tracks_from_artists", confidence: 0.9}
+  ]
 
-Consider the conversation history context when determining intent. Respond with intent type and confidence.`,
+Consider the conversation history context when determining intents. Return an array of intents with their confidence scores.`,
                 },
                 {
                     role: "user",
@@ -134,32 +161,19 @@ Consider the conversation history context when determining intent. Respond with 
                 },
             },
             temperature: 0.3,
-            max_tokens: 100,
+            max_tokens: 200,
         });
 
         const content = response.choices[0].message.content;
         return JSON.parse(content);
     } catch (error) {
         console.error("[Intent Detection Error]", error);
-        return { intentType: "none", confidence: 0 };
+        return { intents: [] };
     }
 }
 
-// Helper function to extract unique artists from a playlist
-function extractUniqueArtists(songs) {
-    const artists = new Set();
-    songs.forEach((song) => {
-        // Only accept structured format: {song: "...", artist: "..."}
-        if (!song || typeof song !== "object" || !song.artist) {
-            throw new Error(`Invalid song format in extractUniqueArtists: expected {song, artist}, got ${JSON.stringify(song)}`);
-        }
-        const artist = song.artist.trim();
-        if (artist) {
-            artists.add(artist);
-        }
-    });
-    return Array.from(artists);
-}
+// Note: extractUniqueArtists moved to utils/playlistExtractors.js
+// Import it when needed: const { extractArtists } = require("./utils/playlistExtractors");
 
 // Helper function to generate initial playlist (Phase 1)
 async function generateInitialPlaylist(message, currentPlaylist, model, previousResponseId, session_id) {
@@ -429,99 +443,295 @@ router.post("/chat", async (req, res) => {
             previousResponseId = conversationState.get(session_id);
         }
 
-        // STEP 1: Detect intent for popular tracks/artists
+        // STEP 1: Detect intents (works even without currentPlaylist)
         console.log("[Intent Detection] Analyzing user message...");
         console.log(`[Intent Detection] Recent messages: ${recentMessages?.length || 0} messages`);
-        const intent = await detectPopularIntent(message, currentPlaylist, recentMessages);
-        console.log("[Intent Detection] Result:", intent);
+        console.log(`[Intent Detection] Current playlist: ${currentPlaylist ? `${currentPlaylist.songs?.length || 0} songs` : "none"}`);
+        const intentResult = await detectPopularIntent(message, currentPlaylist, recentMessages);
+        console.log("[Intent Detection] Result:", intentResult);
 
-        let context = "";
+        const detectedIntents = intentResult.intents || [];
+        const validIntents = detectedIntents.filter((i) => i.confidence > 0.5);
 
-        // STEP 2: Handle different intent types using handler pattern
-        if (intent.intentType !== "none" && intent.confidence > 0.5) {
+        // Separate intents by phase
+        const phase1Intents = [];
+        const phase2Intents = [];
+
+        for (const intent of validIntents) {
             const handler = intentHandlers.get(intent.intentType);
-
             if (handler) {
-                if (handler.requiresTwoPhase()) {
-                    // Handle two-phase intents (e.g., popular_tracks_from_artists)
-                    const result = await handler.executeTwoPhase(message, currentPlaylist, model, previousResponseId, session_id, dataSources.dataSources, contextBuilders, generateInitialPlaylist, refinePlaylistWithPopularTracks, extractUniqueArtists);
-
-                    if (result.success) {
-                        // Store the response_id for stateful conversations
-                        const sessionId = session_id || "default";
-                        if (result.playlist.response_id) {
-                            conversationState.set(sessionId, result.playlist.response_id);
-                            console.log(`[OpenAI Debug] Stored response_id ${result.playlist.response_id} for session ${sessionId}`);
-                        }
-
-                        // Calculate cost using utility function
-                        const skippedPhase1 = result.skippedPhase1;
-                        const phase1Usage = skippedPhase1 ? {} : result.phase1Usage || {};
-                        const phase2Usage = result.phase2Usage || {};
-
-                        const totalPromptTokens = (phase1Usage.prompt_tokens || 0) + (phase2Usage.prompt_tokens || 0);
-                        const totalCompletionTokens = (phase1Usage.completion_tokens || 0) + (phase2Usage.completion_tokens || 0);
-                        const totalCachedTokens = (phase1Usage.cached_tokens || 0) + (phase2Usage.cached_tokens || 0);
-                        const totalTokens = (phase1Usage.total_tokens || 0) + (phase2Usage.total_tokens || 0);
-
-                        const cost = calculateTotalCost(
-                            [phase1Usage, phase2Usage].filter((u) => Object.keys(u).length > 0),
-                            model
-                        );
-
-                        const usage = {
-                            prompt_tokens: totalPromptTokens,
-                            completion_tokens: totalCompletionTokens,
-                            total_tokens: totalTokens,
-                            cost_usd: cost,
-                            phases: skippedPhase1 ? 1 : 2,
-                            phase1_tokens: phase1Usage.total_tokens || 0,
-                            phase2_tokens: phase2Usage.total_tokens || 0,
-                            skipped_phase1: skippedPhase1,
-                        };
-
-                        return res.json({
-                            reply: result.playlist.reply,
-                            songs: result.playlist.songs,
-                            response_id: result.playlist.response_id,
-                            usage: usage,
-                            model: model,
-                        });
-                    } else if (result.fallbackToNormal) {
-                        // Fallback to normal flow
-                        if (!result.skippedPhase1 && result.playlist) {
-                            // Return Phase 1 result if we did Phase 1
-                            const sessionId = session_id || "default";
-                            if (result.playlist.response_id) {
-                                conversationState.set(sessionId, result.playlist.response_id);
-                            }
-
-                            const phase1Usage = result.phase1Usage || {};
-                            const cost = calculateCost(phase1Usage, model);
-
-                            return res.json({
-                                reply: result.playlist.reply,
-                                songs: result.playlist.songs,
-                                response_id: result.playlist.response_id,
-                                usage: {
-                                    prompt_tokens: phase1Usage.prompt_tokens || 0,
-                                    completion_tokens: phase1Usage.completion_tokens || 0,
-                                    total_tokens: phase1Usage.total_tokens || 0,
-                                    cost_usd: cost,
-                                    phases: 1,
-                                },
-                                model: model,
-                            });
-                        }
-                        // Otherwise continue to normal flow below
-                    }
-                } else {
-                    // Handle single-phase intents
-                    const result = await handler.handle(intent, message, currentPlaylist, model, previousResponseId, session_id, dataSources.dataSources, contextBuilders);
-                    context = result.context || "";
+                const phase = handler.getPhase();
+                if (phase === 1) {
+                    phase1Intents.push({ intent, handler });
+                } else if (phase === 2) {
+                    phase2Intents.push({ intent, handler });
                 }
             }
         }
+
+        console.log(`[Phase Orchestration] Phase 1 intents: ${phase1Intents.length}, Phase 2 intents: ${phase2Intents.length}`);
+
+        let phase1Context = "";
+        let phase1Playlist = null;
+        let phase1Usage = {};
+
+        // PHASE 1: Execute all Phase 1 handlers and generate playlist
+        // We need Phase 1 if there are Phase 1 intents OR Phase 2 intents (which need Phase 1 results)
+        if (phase1Intents.length > 0 || phase2Intents.length > 0) {
+            // Execute all Phase 1 handlers in parallel
+            if (phase1Intents.length > 0) {
+                console.log("[Phase 1] Executing Phase 1 handlers...");
+                // Get sessionId from request (we'll add it to the route handler)
+                const sessionId = req.body.spotifySessionId || null;
+                const phase1Results = await Promise.all(phase1Intents.map(({ intent, handler }) => handler.handle(intent, message, currentPlaylist, dataSources.dataSources, contextBuilders, null, sessionId)));
+
+                // Combine all Phase 1 contexts
+                phase1Context = phase1Results
+                    .map((r) => r.context || "")
+                    .filter((c) => c)
+                    .join("\n");
+                console.log(`[Phase 1] Combined context length: ${phase1Context.length} characters`);
+            } else {
+                // No Phase 1 intents, but we have Phase 2 intents - generate playlist without Phase 1 context
+                console.log("[Phase 1] No Phase 1 intents, generating playlist for Phase 2...");
+            }
+
+            // Build Phase 1 system prompt
+            let systemPrompt = `You are a helpful AI assistant that creates and edits music playlists. `;
+
+            if (phase1Context) {
+                systemPrompt += phase1Context;
+            }
+
+            if (currentPlaylist && currentPlaylist.songs && currentPlaylist.songs.length > 0) {
+                const songList = currentPlaylist.songs
+                    .map((s, i) => {
+                        if (!s || typeof s !== "object" || !s.song || !s.artist) {
+                            throw new Error(`Invalid song format: expected {song, artist}, got ${JSON.stringify(s)}`);
+                        }
+                        return `${i + 1}. ${s.song} - ${s.artist}`;
+                    })
+                    .join("\n");
+                systemPrompt += `\n\nCURRENT PLAYLIST:\n${songList}\n\n`;
+                systemPrompt += `The user may ask you to modify the playlist. When editing, return the COMPLETE updated playlist.`;
+            } else {
+                systemPrompt += `When a user asks for a playlist, provide a friendly response and suggest songs that match their request. If the user doesn't specify how many songs they want, suggest 10 songs.`;
+            }
+
+            systemPrompt += `\n\nReturn the response as structured JSON with a reply message and an array of songs, where each song has a "song" and "artist" property.`;
+            systemPrompt += `\n\nUse the provided lists as INSPIRATION - you are free to choose other tracks, artists, or genres that fit the theme. The lists are meant to guide you, not restrict you.`;
+
+            const inputText = `${systemPrompt}\n\nUser: ${message}`;
+
+            // Call OpenAI for Phase 1
+            const validModels = ["gpt-4o", "gpt-5-mini", "gpt-5"];
+            const modelToUse = validModels.includes(model) ? model : "gpt-4o";
+
+            const requestParams = {
+                model: modelToUse,
+                input: inputText,
+                store: true,
+                text: {
+                    format: {
+                        type: "json_schema",
+                        name: "playlist_response",
+                        schema: playlistResponseSchema,
+                    },
+                    verbosity: modelToUse === "gpt-4o" ? "medium" : "low",
+                },
+            };
+
+            if (previousResponseId) {
+                requestParams.previous_response_id = previousResponseId;
+            }
+
+            if (modelToUse === "gpt-5" || modelToUse === "gpt-5-mini") {
+                requestParams.reasoning = { effort: "high" };
+            }
+
+            console.log("[Phase 1] Generating playlist with Phase 1 intents...");
+            const phase1Response = await openai.responses.create(requestParams);
+
+            const phase1Content = phase1Response.output_text || phase1Response.text?.output_text || phase1Response.choices?.[0]?.message?.content || phase1Response.content || phase1Response.message?.content;
+            const phase1Parsed = typeof phase1Content === "string" ? JSON.parse(phase1Content) : phase1Content;
+
+            // Ensure parsed response has songs array
+            if (!phase1Parsed.songs) {
+                phase1Parsed.songs = [];
+            }
+            const validatedSongs = validateAndFilterSongs(phase1Parsed);
+
+            phase1Playlist = {
+                songs: validatedSongs,
+                reply: phase1Parsed.reply || "Created playlist",
+                response_id: phase1Response.id,
+                usage: phase1Response.usage,
+            };
+
+            phase1Usage = phase1Playlist.usage
+                ? {
+                      prompt_tokens: phase1Playlist.usage.input_tokens || phase1Playlist.usage.prompt_tokens || 0,
+                      completion_tokens: phase1Playlist.usage.output_tokens || phase1Playlist.usage.completion_tokens || 0,
+                      cached_tokens: phase1Playlist.usage.input_tokens_details?.cached_tokens || phase1Playlist.usage.cached_tokens || 0,
+                      total_tokens: phase1Playlist.usage.total_tokens || 0,
+                  }
+                : {};
+
+            console.log(`[Phase 1] Generated playlist with ${validatedSongs.length} songs`);
+        }
+
+        // PHASE 2: Execute all Phase 2 handlers and refine playlist
+        if (phase2Intents.length > 0 && phase1Playlist) {
+            const sessionId = req.body.spotifySessionId || null;
+
+            // Phase 2 intents require user login for market-based searches
+            if (!sessionId) {
+                return res.status(401).json({
+                    error: "User must be logged in to Spotify for this request. Phase 2 intents require user market data.",
+                });
+            }
+
+            console.log("[Phase 2] Executing Phase 2 handlers...");
+            let phase2Context = "";
+
+            // Execute all Phase 2 handlers
+            const phase2Results = await Promise.all(phase2Intents.map(({ intent, handler }) => handler.handle(intent, message, currentPlaylist, dataSources.dataSources, contextBuilders, { playlist: phase1Playlist }, sessionId)));
+
+            // Combine all Phase 2 contexts
+            phase2Context = phase2Results
+                .map((r) => r.context || "")
+                .filter((c) => c)
+                .join("\n");
+            console.log(`[Phase 2] Combined context length: ${phase2Context.length} characters`);
+
+            if (phase2Context) {
+                // Build Phase 2 system prompt
+                let systemPrompt = `You are a helpful AI assistant that creates and edits music playlists. `;
+                systemPrompt += phase2Context;
+
+                // Add Phase 1 playlist
+                const songList = phase1Playlist.songs
+                    .map((s, i) => {
+                        if (!s || typeof s !== "object" || !s.song || !s.artist) {
+                            throw new Error(`Invalid song format: expected {song, artist}, got ${JSON.stringify(s)}`);
+                        }
+                        return `${i + 1}. ${s.song} - ${s.artist}`;
+                    })
+                    .join("\n");
+                systemPrompt += `\n\nINITIAL PLAYLIST (to refine):\n${songList}\n\n`;
+
+                systemPrompt += `Return the response as structured JSON with a reply message and an array of songs, where each song has a "song" and "artist" property.`;
+                systemPrompt += `\n\nReturn the COMPLETE refined playlist. Explain what changes you made and why.`;
+                systemPrompt += `\n\nUse the provided popular tracks as INSPIRATION - you can replace songs with more popular tracks, but you're also free to keep existing songs or choose other tracks that better fit the playlist's theme.`;
+
+                const inputText = `${systemPrompt}\n\nUser: ${message}`;
+
+                const validModels = ["gpt-4o", "gpt-5-mini", "gpt-5"];
+                const modelToUse = validModels.includes(model) ? model : "gpt-4o";
+
+                const requestParams = {
+                    model: modelToUse,
+                    input: inputText,
+                    store: true,
+                    text: {
+                        format: {
+                            type: "json_schema",
+                            name: "playlist_response",
+                            schema: playlistResponseSchema,
+                        },
+                        verbosity: modelToUse === "gpt-4o" ? "medium" : "low",
+                    },
+                    previous_response_id: phase1Playlist.response_id,
+                };
+
+                if (modelToUse === "gpt-5" || modelToUse === "gpt-5-mini") {
+                    requestParams.reasoning = { effort: "high" };
+                }
+
+                console.log("[Phase 2] Refining playlist with Phase 2 intents...");
+                const phase2Response = await openai.responses.create(requestParams);
+
+                const phase2Content = phase2Response.output_text || phase2Response.text?.output_text || phase2Response.choices?.[0]?.message?.content || phase2Response.content || phase2Response.message?.content;
+                const phase2Parsed = typeof phase2Content === "string" ? JSON.parse(phase2Content) : phase2Content;
+
+                // Ensure parsed response has songs array
+                if (!phase2Parsed.songs) {
+                    phase2Parsed.songs = [];
+                }
+                const validatedSongs = validateAndFilterSongs(phase2Parsed);
+
+                const phase2Playlist = {
+                    songs: validatedSongs,
+                    reply: phase2Parsed.reply || "Refined playlist",
+                    response_id: phase2Response.id,
+                    usage: phase2Response.usage,
+                };
+
+                const phase2Usage = phase2Playlist.usage
+                    ? {
+                          prompt_tokens: phase2Playlist.usage.input_tokens || phase2Playlist.usage.prompt_tokens || 0,
+                          completion_tokens: phase2Playlist.usage.output_tokens || phase2Playlist.usage.completion_tokens || 0,
+                          cached_tokens: phase2Playlist.usage.input_tokens_details?.cached_tokens || phase2Playlist.usage.cached_tokens || 0,
+                          total_tokens: phase2Playlist.usage.total_tokens || 0,
+                      }
+                    : {};
+
+                // Calculate total cost
+                const cost = calculateTotalCost(
+                    [phase1Usage, phase2Usage].filter((u) => Object.keys(u).length > 0),
+                    model
+                );
+
+                // Store response_id
+                const sessionId = session_id || "default";
+                if (phase2Playlist.response_id) {
+                    conversationState.set(sessionId, phase2Playlist.response_id);
+                }
+
+                return res.json({
+                    reply: phase2Playlist.reply,
+                    songs: phase2Playlist.songs,
+                    response_id: phase2Playlist.response_id,
+                    usage: {
+                        prompt_tokens: (phase1Usage.prompt_tokens || 0) + (phase2Usage.prompt_tokens || 0),
+                        completion_tokens: (phase1Usage.completion_tokens || 0) + (phase2Usage.completion_tokens || 0),
+                        total_tokens: (phase1Usage.total_tokens || 0) + (phase2Usage.total_tokens || 0),
+                        cost_usd: cost,
+                        phases: 2,
+                        phase1_tokens: phase1Usage.total_tokens || 0,
+                        phase2_tokens: phase2Usage.total_tokens || 0,
+                    },
+                    model: model,
+                });
+            }
+        }
+
+        // If we have Phase 1 but no Phase 2, return Phase 1 result
+        if (phase1Playlist && phase2Intents.length === 0) {
+            const sessionId = session_id || "default";
+            if (phase1Playlist.response_id) {
+                conversationState.set(sessionId, phase1Playlist.response_id);
+            }
+
+            const cost = calculateCost(phase1Usage, model);
+
+            return res.json({
+                reply: phase1Playlist.reply,
+                songs: phase1Playlist.songs,
+                response_id: phase1Playlist.response_id,
+                usage: {
+                    prompt_tokens: phase1Usage.prompt_tokens || 0,
+                    completion_tokens: phase1Usage.completion_tokens || 0,
+                    total_tokens: phase1Usage.total_tokens || 0,
+                    cost_usd: cost,
+                    phases: 1,
+                },
+                model: model,
+            });
+        }
+
+        // Fallback to normal flow if no intents detected
+        let context = "";
 
         // STEP 3: Build system prompt with context and generate playlist
         // Build system prompt with context
@@ -787,3 +997,5 @@ router.post("/chat", async (req, res) => {
 });
 
 module.exports = router;
+// Export OpenAI instance for use in other modules (e.g., keyword extraction)
+module.exports.openai = openai;
